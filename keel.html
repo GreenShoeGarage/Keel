@@ -470,7 +470,7 @@ footer{border-top:1px solid var(--rule);margin-top:40px;padding:18px 0;color:var
    ========================================================================== */
 
 const K = {};
-K.VERSION = "1.6.0";
+K.VERSION = "1.8.0";
 K.BUILT = "2026-08-11";
 
 /* ---------- bytes ---------------------------------------------------- */
@@ -1018,6 +1018,29 @@ K.FALLBACK_LAYOUT = [
    the test fixture, and a rule that nothing is called a success unless a
    result of 0 says so.                                                     */
 
+
+/* The ROM prints its reset reason on every boot. When an application dies
+   before it can print anything, this banner is the only evidence there is. */
+K.RESET_REASONS = {
+  1: ["POWERON_RESET", "power applied, or EN pulled low and released"],
+  3: ["SW_RESET", "software asked for a reset — esp_restart, or the ROM loader running user code"],
+  4: ["OWDT_RESET", "legacy watchdog"],
+  5: ["DEEPSLEEP_RESET", "woke from deep sleep"],
+  6: ["SDIO_RESET", "reset over SDIO"],
+  7: ["TG0WDT_SYS_RESET", "timer group 0 watchdog — the app stopped feeding it"],
+  8: ["TG1WDT_SYS_RESET", "timer group 1 watchdog — the app stopped feeding it"],
+  9: ["RTCWDT_SYS_RESET", "RTC watchdog — the app hung early"],
+  10: ["INTRUSION_RESET", "intrusion detected"],
+  11: ["TGWDT_CPU_RESET", "watchdog reset of the CPU only"],
+  12: ["SW_CPU_RESET", "software reset of the CPU — a panic handler or esp_restart"],
+  13: ["RTCWDT_CPU_RESET", "RTC watchdog reset the CPU"],
+  14: ["EXT_CPU_RESET", "the other core asked for it"],
+  15: ["RTCWDT_BROWN_OUT_RESET", "the supply sagged — brownout"],
+  16: ["RTCWDT_RTC_RESET", "RTC watchdog reset everything"],
+};
+
+K.APP_OUTPUT = /S:B:|INFO\s*\||DEBUG\s*\||WARN\s*\||ERROR\s*\||Booted, wake cause/;
+
 K.stripAnsi = t => String(t).replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
 
 K.RADIOLIB_ERRORS = {
@@ -1037,11 +1060,17 @@ K.RADIOLIB_ERRORS = {
 /* The ROM prints a fixed banner on every reset, so a capture can hold several
    boots. Summing attempts across them makes one board look like it tried
    fifteen times when it tried seven, twice. */
-K.BOOT_BANNER = /(?=ets\s+\w+\s+\d+\s+\d{4}|rst:0x[0-9a-f]+\s*\()/gi;
+K.BOOT_BANNER = /(?=ets\s+\w+\s+\d+\s+\d{4})/gi;
+K.BOOT_BANNER_ALT = /(?=rst:0x[0-9a-f]+\s*\()/gi;
 
+/* One boot prints the ROM date line AND a rst: line, so splitting on either
+   counts every boot twice. Split on the date line, and only fall back to the
+   reset line for captures that started mid-banner. */
 K.splitBoots = function (text) {
-  const parts = String(text).split(K.BOOT_BANNER).filter(p => p.trim().length);
-  return parts.length ? parts : [String(text)];
+  const t = String(text);
+  const re = K.BOOT_BANNER.test(t) ? K.BOOT_BANNER : K.BOOT_BANNER_ALT;
+  const parts = t.split(re).filter(p => p.trim().length);
+  return parts.length ? parts : [t];
 };
 
 K.readBootLog = function (raw) {
@@ -1051,9 +1080,31 @@ K.readBootLog = function (raw) {
   const out = [];
   const add = (level, title, body) => out.push({ level, title, body });
 
+  /* A boot that produces no application output at all is a different animal
+     from a boot that produces a complaint. Count them before reading anything
+     else, because if the app never speaks there is nothing else to read. */
+  const spoke = boots.filter(b => K.APP_OUTPUT.test(b)).length;
+  const reasons = [...whole.matchAll(/rst:0x([0-9a-f]+)\s*\(([^)]*)\)/gi)].map(m => parseInt(m[1], 16));
+  const tally = {};
+  for (const r of reasons) tally[r] = (tally[r] || 0) + 1;
+  const dominant = Object.keys(tally).sort((a, b) => tally[b] - tally[a])[0];
+
+  if (boots.length >= 3 && spoke === 0) {
+    const info = K.RESET_REASONS[dominant] || ["reset reason 0x" + Number(dominant).toString(16), "not a code KEEL knows"];
+    add("stop", "The board is in a reset loop and never gets far enough to speak",
+      boots.length + " boots in this capture and not one produced a single line of application output. The ROM loads the image and reaches the entry point, then resets. Reset reason on " +
+      tally[dominant] + " of them: " + info[0] + " — " + info[1] +
+      ". Nothing in the firmware's own logging can help here because the firmware never reaches it.");
+    add("info", "Where to look, in order",
+      "Unplug the LoRa module and boot the bare board. It booted cleanly before, so if it boots cleanly again the module or its wiring is causing this — a short across 3V3, or something on a strapping pin. If it still loops bare, reflash from the archive's own plan rather than a hand-built one: an app written at the wrong offset, or a region skipped, produces exactly this — a clean load followed by an immediate reset with nothing said.");
+    return out;
+  }
+
   if (boots.length > 1)
     add("warn", boots.length + " boots in this capture",
-      "The board has reset " + (boots.length - 1) + " time" + (boots.length > 2 ? "s" : "") + " while you were watching. Everything below is read from the most recent boot only. A board that keeps resetting is its own problem, separate from anything it reports.");
+      "The board has reset " + (boots.length - 1) + " time" + (boots.length > 2 ? "s" : "") + " while you were watching" +
+      (dominant !== undefined ? ", most recently " + (K.RESET_REASONS[dominant] || ["an unknown reason"])[0] : "") +
+      ". Everything below is read from the most recent boot only. A board that keeps resetting is its own problem, separate from anything it reports.");
 
   const build = text.match(/S:B:\d+,([0-9][^,\s]*),([^,\s]+)/);
   if (build) add("info", "Firmware is running", "Version " + build[1] + ", variant " + build[2] + ".");
@@ -1081,9 +1132,12 @@ K.readBootLog = function (raw) {
     const why = codes.map(c => c + " (" + (K.RADIOLIB_ERRORS[String(c)] || "unrecognised RadioLib code") + ")").join(", ");
     const named = [...new Set((text.match(/No (\S+) radio(?: with (\w+))?/g) || []).map(s2 => s2.replace(/^No /, "").replace(/ radio/, "")))];
     const tried = named.length ? named.join(", ") : [...new Set(attempts.map(a => a.chip))].join(", ");
-    add("stop", "No radio answered — " + attempts.length + " attempt" + (attempts.length > 1 ? "s" : "") + " in this boot, all failed",
-      "The firmware tried " + tried + " and got " + why +
-      ". On a DIY build this is wiring, not firmware: nothing is responding on the SPI bus. If no module is fitted yet, this is exactly the expected log.");
+    const notFound = codes.length === 1 && codes[0] === -2;
+    add(notFound ? "warn" : "stop",
+      notFound ? "No LoRa module on the SPI bus" : "No radio answered — " + attempts.length + " attempts in this boot, all failed",
+      (notFound ? "If no module is fitted, this is the expected log and there is nothing wrong with the board or the firmware. " : "") +
+      "The firmware tried " + tried + " over " + attempts.length + " attempt" + (attempts.length > 1 ? "s" : "") + " and got " + why +
+      ". If a module IS fitted, this is wiring rather than firmware — station 02 will probe the bus directly and tell you whether the line is free, shorted, or answering wrongly.");
   }
 
   if (/using UNSET|region=UNSET/.test(text))
@@ -1255,6 +1309,8 @@ K.PREFLIGHT = [
 K.FAULTS = [
   ["noModule", "No radio on the SPI bus (probe)"],
   ["misoLow", "MISO tied low (probe)"],
+  ["misoHigh", "MISO tied high (probe)"],
+  ["sckStuck", "SCK shorted to ground (probe)"],
   ["nosync", "Board never answers a sync"],
   ["garbage", "ROM boot text between frames"],
   ["badstatus", "Bootloader refuses the third data block"],
@@ -1289,8 +1345,14 @@ K.IOMUX_OFF = {
   14: 0x30, 15: 0x3c, 16: 0x4c, 17: 0x50, 18: 0x70, 19: 0x74, 21: 0x7c,
   22: 0x80, 23: 0x8c, 25: 0x24, 26: 0x28, 27: 0x2c, 32: 0x1c, 33: 0x20,
 };
-/* MCU_SEL = 2 (the GPIO function on every pad we touch), FUN_DRV = 2, FUN_IE on. */
-K.IOMUX_GPIO_IN = (2 << 12) | (2 << 10) | (1 << 9);
+/* MCU_SEL = 2 (the GPIO function on every pad we touch), FUN_DRV = 2, FUN_IE on,
+   and the internal pull resistors on bits 8 (up) and 7 (down). Being able to
+   pull a line and watch what it does is the difference between "this pin is
+   floating" and "this pin is tied to something" — and a floating input reads
+   whatever it feels like, which is how the first version of this probe called
+   an unconnected pin a grounded one. */
+K.iomux = (opts = {}) => (2 << 12) | (2 << 10) | (1 << 9) | (opts.pu ? 1 << 8 : 0) | (opts.pd ? 1 << 7 : 0);
+K.IOMUX_GPIO_IN = K.iomux();
 
 K.PROBE_PINS = { sck: 5, mosi: 27, miso: 19, cs: 18, rst: 23 };
 
@@ -1321,9 +1383,38 @@ K.SpiBitBang = class {
     await K.sleep(20);
   }
 
-  /* MISO with CS high and nothing driving it tells us whether the line is
-     floating high, tied low, or shorted — useful before any transfer. */
-  async idleLevel() { return this._get(this.p.miso); }
+  /* Pull the line each way and watch. A line that follows the pull is free;
+     one that refuses is tied to something. This cannot tell a missing module
+     from a present one — MISO is high-Z whenever CS is high — but it does
+     separate a real short from an open circuit, which is worth knowing before
+     any of the rest is believed. */
+  async characterise(pin) {
+    await this._w(K.IOMUX_BASE + K.IOMUX_OFF[pin], K.iomux({ pu: true }));
+    const up = await this._get(pin);
+    await this._w(K.IOMUX_BASE + K.IOMUX_OFF[pin], K.iomux({ pd: true }));
+    const down = await this._get(pin);
+    await this._w(K.IOMUX_BASE + K.IOMUX_OFF[pin], K.iomux());
+    if (up === 1 && down === 0) return "free";
+    if (up === 0 && down === 0) return "tied low";
+    if (up === 1 && down === 1) return "tied high";
+    return "unstable";
+  }
+
+  /* Every pin we drive should read back what we drove. One that does not is
+     shorted, or is not the pin we think it is. */
+  async checkDriven() {
+    const bad = [];
+    for (const [name, pin] of [["SCK", this.p.sck], ["MOSI", this.p.mosi], ["CS", this.p.cs], ["RST", this.p.rst]]) {
+      await this._set(pin, 1);
+      const hi = await this._get(pin);
+      await this._set(pin, 0);
+      const lo = await this._get(pin);
+      if (hi !== 1 || lo !== 0) bad.push(name + " (GPIO " + pin + ")");
+    }
+    await this._set(this.p.cs, 1);
+    await this._set(this.p.rst, 1);
+    return bad;
+  }
 
   async xfer(bytesOut, bytesIn) {
     const got = [];
@@ -1360,8 +1451,11 @@ K.probeRadio = async function (loader, opts = {}) {
   step("Claiming the pins from the bootloader");
   await spi.setup();
 
-  step("Looking at MISO with the bus idle");
-  const idle = await spi.idleLevel();
+  step("Checking the pins we drive read back what we drive");
+  const stuck = await spi.checkDriven();
+
+  step("Pulling MISO each way to see whether it is free");
+  const miso = await spi.characterise(spi.p.miso);
 
   step("Reading SX127x RegVersion (0x42)");
   const v127 = (await spi.xfer([0x42], 1))[0];
@@ -1369,31 +1463,39 @@ K.probeRadio = async function (loader, opts = {}) {
   step("Reading SX126x status (GetStatus)");
   const st126 = (await spi.xfer([0xc0], 1))[0];
 
+  if (stuck.length) {
+    add("stop", "A pin we drive is not following us: " + stuck.join(", "),
+      "Driving it high and low and reading it back gives the wrong level, which means that line is shorted to ground or to another net — or the wire is not on the pin the label says. Fix this before reading anything else here.");
+  }
+
   if (v127 === K.SX127X_VERSION) {
     add("good", "An SX1276/77/78 answered",
-      "RegVersion read back 0x12, which is the value that chip is supposed to return. The SPI wiring is right and the radio is alive. If Meshtastic still reports no radio after this, the problem is elsewhere.");
+      "RegVersion read back 0x12, which is the value that chip is supposed to return. The SPI wiring is right and the radio is alive.");
   } else if (st126 !== 0x00 && st126 !== 0xff) {
     add("warn", "Something answered, and it is not an SX127x",
       "RegVersion read 0x" + v127.toString(16).padStart(2, "0") + " rather than 0x12, but the SX126x status byte came back 0x" +
       st126.toString(16).padStart(2, "0") + ", which is neither all-ones nor all-zeros. That is consistent with an SX1262 or SX1268 being present, but it is weaker evidence than the SX127x check and KEEL will not call it a pass.");
-  } else if (v127 === 0xff && st126 === 0xff) {
-    add("stop", "MISO is stuck high — nothing is driving the bus",
-      "Every bit read back as 1, which is what an unconnected input with a pull-up looks like. Either nothing is wired to MISO (D19), the module has no power, or CS (D18) is not reaching it so the radio never talks.");
-  } else if (v127 === 0x00 && st126 === 0x00) {
-    add("stop", "MISO is stuck low — the line is held down",
-      "Every bit read back as 0. That is a MISO line tied to ground, a module with no 3.3 V on it, or MISO and MOSI swapped so the radio is listening on the wire we are reading.");
+  } else if (miso === "free") {
+    add("warn", "Nothing is driving MISO — most likely there is no module on the bus",
+      "MISO follows an internal pull-up and pull-down cleanly, so the line is not shorted to anything; it is simply free. In order of likelihood: no LoRa module is fitted, the module has no 3.3 V on it, or MISO and CS are not landing on the module's pins. Note that a module that IS fitted also leaves MISO free whenever CS is high, so this cannot by itself prove absence — but combined with the register read returning nothing, absence is the plain reading.");
+  } else if (miso === "tied low") {
+    add("stop", "MISO is tied low — the line is held down",
+      "MISO stays at 0 even with the internal pull-up on, so something is holding it to ground. A wire to GND, a module with no supply clamping the pin, or MISO landed on the wrong pad.");
+  } else if (miso === "tied high") {
+    add("stop", "MISO is tied high — the line is held up",
+      "MISO stays at 1 even with the internal pull-down on, so something is holding it to 3.3 V.");
   } else {
-    add("stop", "Something is on the bus but it is not answering correctly",
-      "RegVersion read 0x" + v127.toString(16).padStart(2, "0") + " and the SX126x status read 0x" + st126.toString(16).padStart(2, "0") +
-      ". Neither matches a known-good answer. Suspect a swapped MISO/MOSI pair, a marginal SCK lead, or a module held in reset.");
+    add("stop", "MISO will not settle",
+      "Pulling the line up and down does not give a consistent answer. Suspect a long or noisy lead, or a partially seated jumper.");
   }
 
   add("info", "What the probe did",
-    "Idle MISO read " + idle + ". " + spi.writes + " register writes and " + spi.reads +
-    " reads over the serial wire, bit-banging SPI on SCK " + spi.p.sck + ", MOSI " + spi.p.mosi +
-    ", MISO " + spi.p.miso + ", CS " + spi.p.cs + ", RST " + spi.p.rst + ". No firmware ran on the chip.");
+    "MISO characterised as: " + miso + ". " + (stuck.length ? "Driven-pin check failed on " + stuck.join(", ") + ". " : "All driven pins read back correctly. ") +
+    "SX127x RegVersion read 0x" + v127.toString(16).padStart(2, "0") + ", SX126x status 0x" + st126.toString(16).padStart(2, "0") + ". " +
+    spi.writes + " register writes and " + spi.reads + " reads over the serial wire, bit-banging SPI on SCK " + spi.p.sck +
+    ", MOSI " + spi.p.mosi + ", MISO " + spi.p.miso + ", CS " + spi.p.cs + ", RST " + spi.p.rst + ". No firmware ran on the chip.");
 
-  return { findings, version: v127, status126: st126, idle };
+  return { findings, version: v127, status126: st126, miso, stuck };
 };
 /* ============================================================================
    Section 3 — talking to the thing. One driver, two wires: a real serial port
@@ -1477,6 +1579,7 @@ K.SimGpio = class {
     this.lastSck = 0;
     this.shiftIn = 0; this.bits = 0; this.cmd = null;
     this.shiftOut = 0; this.outBits = 0; this.miso = 1;
+    this.pull = {};
     this.regs = { 0x42: K.SX127X_VERSION };
   }
   write(addr, val) {
@@ -1484,7 +1587,11 @@ K.SimGpio = class {
     else if (addr === K.GPIO.OUT_W1TC) this.out &= ~val;
     else if (addr === K.GPIO.ENABLE_W1TS) this.enable |= val;
     else if (addr === K.GPIO.ENABLE_W1TC) this.enable &= ~val;
-    else return;
+    else if (addr >= K.IOMUX_BASE && addr < K.IOMUX_BASE + 0x100) {
+      const pin = Object.keys(K.IOMUX_OFF).find(k => K.IOMUX_BASE + K.IOMUX_OFF[k] === addr);
+      if (pin !== undefined) this.pull[pin] = (val >> 8) & 1 ? 1 : ((val >> 7) & 1 ? 0 : null);
+      return;
+    } else return;
     this._tick();
   }
   _bit(pin) { return (this.out >>> pin) & 1; }
@@ -1511,11 +1618,19 @@ K.SimGpio = class {
     }
     this.lastSck = sck;
   }
+  /* Driven pins read back what is driven. MISO is high-Z whenever CS is high —
+     that is how a real SPI slave behaves — so with no transfer in flight it
+     follows whichever internal pull is enabled, exactly like an empty bus. */
   read() {
-    if (this.faults.noModule) return 0xffffffff;          // floating high
-    if (this.faults.misoLow) return 0;                     // tied down
-    let v = this.out & ~(1 << this.p.miso);
-    if (this.miso) v |= 1 << this.p.miso;
+    let v = this.out;
+    const pull = this.pull[this.p.miso];
+    let m;
+    if (this.faults.misoLow) m = 0;
+    else if (this.faults.misoHigh) m = 1;
+    else if (this.faults.noModule || this._bit(this.p.cs)) m = pull === null || pull === undefined ? 0 : pull;
+    else m = this.miso;
+    v = m ? (v | (1 << this.p.miso)) : (v & ~(1 << this.p.miso));
+    if (this.faults.sckStuck) v &= ~(1 << this.p.sck);
     return v >>> 0;
   }
 };
@@ -2666,6 +2781,26 @@ K.VEC.bootLogNoRadio = [
   "\u001b[0m\u001b[33mWARN  \u001b[0m| ??:??:?? 11 \u001b[33mNo SX1262 radio with TCXO, Vref 1.800000V",
 ].join("\r\n");
 
+
+/* A real capture from Mike's board, 2026-08-11: the ROM loads the image, reaches
+   the entry point, and resets, over and over, without the application printing
+   a single line. The first reader would have said almost nothing about this. */
+K.VEC.bootLoop = (() => {
+  const one = [
+    "ets Jul 29 2019 12:21:46",
+    "",
+    "rst:0x3 (SW_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)",
+    "configsip: 0, SPIWP:0xee",
+    "clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00",
+    "mode:DIO, clock div:2",
+    "load:0x3fff0030,len:1184",
+    "load:0x40078000,len:13232",
+    "load:0x40080400,len:3028",
+    "entry 0x400805e4",
+  ].join("\r\n");
+  return Array(9).fill(one).join("\r\n");
+})();
+
 /* ---------- the self-test ---------------------------------------------- */
 
 K.selfTest = async function () {
@@ -3034,9 +3169,10 @@ K.selfTest = async function () {
   (function () {
     const f = K.readBootLog(K.VEC.bootLogNoRadio);
     const t = f.map(x => x.title).join(" | ");
-    ok("a radio that never answered is reported as a failure", f.some(x => x.level === "stop" && /No radio answered/.test(x.title)), t);
+    ok("a radio that never answered is not passed off as working", f.some(x => (x.level === "stop" || x.level === "warn") && /No (radio answered|LoRa module)/.test(x.title)), t);
+    ok("a bus with nothing on it leads with that, not with a red fault", f.some(x => /No LoRa module on the SPI bus/.test(x.title) && x.level === "warn" && /expected log/.test(x.body)), t);
     ok("and is NOT reported as a success", !f.some(x => x.level === "good"), t);
-    ok("every attempt is counted, not just the first", f.some(x => /2 attempts/.test(x.title)), t);
+    ok("every attempt is counted, not just the first", f.some(x => /over 2 attempts/.test(x.body)), t);
     ok("RadioLib -2 is decoded, not shown raw", f.some(x => /chip not found/.test(x.body)));
     ok("the firmware version and variant are read out", f.some(x => /2\.7\.26/.test(x.body) && /diy-v1/.test(x.body)));
     ok("the diy-v1 SPI pins are recognised as correct", f.some(x => /SPI bus opened on 5 \/ 19 \/ 27 \/ 18/.test(x.title) && x.level === "info"));
@@ -3048,11 +3184,31 @@ K.selfTest = async function () {
     const twice = banner + K.VEC.bootLogNoRadio + "\r\n" + banner + "RF95 init result -2\r\nNo RF95 radio\r\n";
     const f = K.readBootLog(twice);
     ok("several boots in one capture are noticed", f.some(x => /boots in this capture/.test(x.title)));
-    ok("attempts are counted per boot, not summed across resets", f.some(x => /1 attempt in this boot/.test(x.title)), f.map(x => x.title).join(" | "));
+    ok("attempts are counted per boot, not summed across resets", f.some(x => /over 1 attempt\b/.test(x.body)), f.map(x => x.body).join(" | "));
   })();
   (function () {
     const f = K.readBootLog(K.VEC.bootLogNoRadio);
     ok("the specific radio variants the firmware named are reported", f.some(x => /SX1262 with TCXO/.test(x.body) || /RF95/.test(x.body)));
+  })();
+  (function () {
+    const f = K.readBootLog(K.VEC.bootLoop);
+    const t = f.map(x => x.title).join(" | ");
+    ok("a board that resets without ever speaking is called a reset loop", f.some(x => x.level === "stop" && /reset loop/.test(x.title)), t);
+    ok("the reset reason is decoded from the ROM banner", f.some(x => /SW_RESET/.test(x.body)));
+    ok("the boot count is reported", f.some(x => /9 boots/.test(x.body)));
+    ok("no radio finding is invented from a log with no radio lines", !f.some(x => /radio/i.test(x.title)));
+    ok("it says where to look next", f.some(x => /Unplug the LoRa module/.test(x.body)));
+  })();
+  (function () {
+    // One clean boot that does speak must not be read as a loop.
+    ok("a single healthy boot is not a reset loop", !K.readBootLog(K.VEC.bootLogNoRadio).some(x => /reset loop/.test(x.title)));
+    const banner = "ets Jul 29 2019 12:21:46\r\nrst:0x1 (POWERON_RESET),boot:0x13\r\n";
+    const mixed = banner + "entry 0x400805e4\r\n" + banner + "entry 0x400805e4\r\n" + banner + K.VEC.bootLogNoRadio;
+    ok("boots that end in a working app are not a loop either", !K.readBootLog(mixed).some(x => /reset loop/.test(x.title)));
+  })();
+  (function () {
+    ok("a brownout reads differently from a software reset",
+      /brownout/.test(K.RESET_REASONS[15][1]) && /software/.test(K.RESET_REASONS[3][1]));
   })();
   (function () {
     const f = K.readBootLog("SX126x init result 0\nSet radio: region=US");
@@ -3085,17 +3241,32 @@ K.selfTest = async function () {
     const r = await K.probeRadio(l);
     ok("a simulated SX1276 is read correctly", r.version === K.SX127X_VERSION, "read 0x" + r.version.toString(16));
     ok("and is reported as a pass", r.findings.some(f => f.level === "good" && /SX1276/.test(f.title)));
-    ok("the probe says what it actually did", r.findings.some(f => /register writes and/.test(f.body)));
+    ok("no driven pin is reported stuck when the bus is healthy", r.stuck.length === 0);
   } catch (e) { ok("a simulated SX1276 is read correctly", false, e.message); }
   try {
     const r = await K.probeRadio(await probeRig({ noModule: true }));
-    ok("a floating bus is called stuck high, not a pass", r.version === 0xff && r.findings.some(f => f.level === "stop" && /stuck high/.test(f.title)));
-    ok("nothing is reported as good when nothing answered", !r.findings.some(f => f.level === "good"));
-  } catch (e) { ok("a floating bus is called stuck high, not a pass", false, e.message); }
+    ok("an empty bus is characterised as free, not as a short", r.miso === "free", "miso=" + r.miso);
+    ok("and is reported as most likely no module, not as a fault",
+      r.findings.some(f => /no module on the bus/i.test(f.title)) && !r.findings.some(f => /tied low|tied high/.test(f.title)));
+    ok("nothing is called good when nothing answered", !r.findings.some(f => f.level === "good"));
+    ok("the finding admits a fitted module also leaves MISO free", r.findings.some(f => /cannot by itself prove absence/.test(f.body)));
+  } catch (e) { ok("an empty bus is characterised as free, not as a short", false, e.message); }
   try {
     const r = await K.probeRadio(await probeRig({ misoLow: true }));
-    ok("a grounded MISO is called stuck low", r.version === 0x00 && r.findings.some(f => f.level === "stop" && /stuck low/.test(f.title)));
-  } catch (e) { ok("a grounded MISO is called stuck low", false, e.message); }
+    ok("a line held to ground is called tied low", r.miso === "tied low" && r.findings.some(f => f.level === "stop" && /tied low/.test(f.title)));
+  } catch (e) { ok("a line held to ground is called tied low", false, e.message); }
+  try {
+    const r = await K.probeRadio(await probeRig({ misoHigh: true }));
+    ok("a line held to 3V3 is called tied high", r.miso === "tied high" && r.findings.some(f => f.level === "stop" && /tied high/.test(f.title)));
+  } catch (e) { ok("a line held to 3V3 is called tied high", false, e.message); }
+  try {
+    const r = await K.probeRadio(await probeRig({ sckStuck: true }));
+    ok("a driven pin that will not follow is named", r.stuck.some(x => /SCK/.test(x)) && r.findings.some(f => f.level === "stop" && /not following us/.test(f.title)));
+  } catch (e) { ok("a driven pin that will not follow is named", false, e.message); }
+  (function () {
+    ok("the pull-up and pull-down bits are where the IO_MUX says", ((K.iomux({ pu: true }) >> 8) & 1) === 1 && ((K.iomux({ pd: true }) >> 7) & 1) === 1);
+    ok("no pull is enabled by default", ((K.IOMUX_GPIO_IN >> 7) & 3) === 0);
+  })();
   (function () {
     ok("every probe pin has an IO_MUX offset", Object.values(K.PROBE_PINS).every(p => K.IOMUX_OFF[p] !== undefined));
     ok("the probe drives the pins the variant names",

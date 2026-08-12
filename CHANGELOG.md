@@ -2,6 +2,45 @@
 
 All notable changes to KEEL. Versions are the single-file `keel.html`.
 
+## v1.8.0 — 2026-08-11
+
+### Fixed
+- **The probe called a floating pin a grounded one.** It read MISO with no pull
+  resistor enabled, so an unconnected input read whatever it felt like — 0, in
+  practice — and the probe reported "MISO is stuck low" on a bus with nothing
+  attached to it. It now pulls the line up, reads, pulls it down, reads again,
+  and only calls a line tied when it refuses to follow. A line that follows both
+  pulls is reported as free, with the plain reading — no module fitted — first,
+  and the caveat that a fitted module also leaves MISO free while CS is high.
+- Every pin the probe drives is now driven high and low and read back. One that
+  does not follow is named as a short before anything else is believed.
+- The boot-log finding for a bus with nothing on it is no longer a red "all
+  failed" card with "this is expected" buried in its last sentence. It leads
+  with `No LoRa module on the SPI bus` and says up front that nothing is wrong.
+
+### Added
+- Simulator faults for MISO tied high and SCK shorted to ground, and a model of
+  the internal pull resistors and of MISO going high-Z whenever CS is high.
+  136 assertions.
+
+## v1.7.0 — 2026-08-11
+
+### Fixed
+- The boot reader read findings from the most recent boot, which is useless when
+  every boot is empty. A capture where the board resets repeatedly and never
+  prints one line of application output is now recognised for what it is — a
+  reset loop — and reported before anything else, with the ROM's reset reason
+  decoded and the next two things to try named in order.
+- Boots were counted twice: one boot prints both the ROM date line and a `rst:`
+  line, and the splitter fired on either. It splits on the date line now, with
+  the reset line as a fallback for captures that begin mid-banner.
+
+### Added
+- `K.RESET_REASONS` — the ROM's sixteen reset codes decoded, so a brownout reads
+  differently from a software reset and a watchdog reads differently from both.
+- A second real capture as a fixture: nine boots, `rst:0x3 SW_RESET` every time,
+  no application output at all. 129 assertions.
+
 ## v1.6.0 — 2026-08-11
 
 ### Added
