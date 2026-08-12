@@ -313,6 +313,7 @@ footer{border-top:1px solid var(--rule);margin-top:40px;padding:18px 0;color:var
       </div>
     </div>
     <div class="card warn small" id="flashsize-note"></div>
+    <div id="manual-wrap"></div>
     <table id="plan-table"></table>
     <div class="card warn" style="margin-top:18px">
       <h4>Erase</h4>
@@ -455,7 +456,7 @@ footer{border-top:1px solid var(--rule);margin-top:40px;padding:18px 0;color:var
    ========================================================================== */
 
 const K = {};
-K.VERSION = "1.2.0";
+K.VERSION = "1.3.0";
 K.BUILT = "2026-08-11";
 
 /* ---------- bytes ---------------------------------------------------- */
@@ -1011,7 +1012,9 @@ K.buildPlan = function (opts) {
     if (!entry) {
       problems.push({
         level: "bind",
-        text: "the write at " + K.addr(w.offset) + " names " + w.token + ", which is not a file in this archive — choose the file it means in station 03",
+        text: w.manual
+          ? "the write at " + K.addr(w.offset) + " has no file chosen — pick one, or remove the row"
+          : "the write at " + K.addr(w.offset) + " names " + w.token + ", which is not a file in this archive — choose the file it means in station 03, or tell KEEL to write nothing there",
         token: w.token, offset: w.offset,
       });
       continue;
@@ -1719,6 +1722,13 @@ K.FAULTS = [
   }
 
   function currentWrites() {
+    if (S.manual) {
+      return S.manual.map((m, i) => {
+        const entry = m.name && m.name !== K.SKIP ? K.resolveEntry(m.name, S.entries, m.name) : null;
+        return { key: "manual:" + i, offset: m.offset, token: m.name || "(nothing chosen)", bound: m.name,
+                 entry, needsBind: !entry, skipWrite: false, line: "you entered this", n: 0, manual: true };
+      }).filter(w => w.entry || w.needsBind);
+    }
     const raw = S.script ? S.script.writes : fallbackWrites();
     return raw.map(w => {
       const key = (w.n || 0) + ":" + w.token;
@@ -1831,10 +1841,64 @@ K.FAULTS = [
     showStation("burn");
   });
 
+  function manualSeed() {
+    if (S.manual) return;
+    const from = (S.script ? S.script.writes : fallbackWrites()).map(w => {
+      const e = K.resolveEntry(w.token, S.entries, (S.binds || {})[(w.n || 0) + ":" + w.token]);
+      return { offset: w.offset, name: e ? e.name : "" };
+    });
+    S.manual = from.length ? from : [{ offset: 0, name: "" }];
+  }
+
+  function renderManual() {
+    const wrap = $("manual-wrap");
+    if (!S.manual) {
+      wrap.innerHTML = `<div class="card small"><b>The plan above was read from the archive.</b>
+        If it is wrong, or the script names things KEEL cannot match, take the wheel:
+        <button class="act" id="btn-manual" style="margin:8px 8px 0 0">Ignore the script and build the plan myself</button></div>`;
+      $("btn-manual").addEventListener("click", () => { manualSeed(); renderManual(); refreshPlan(); });
+      return;
+    }
+    const bins = S.entries.filter(e => /\.bin$/i.test(e.name));
+    wrap.innerHTML = `<div class="card warn">
+      <h4>You are building this plan by hand</h4>
+      <p class="small" style="margin:0 0 12px;color:var(--dim)">The install script is not being used. Every offset below is one you typed and every file is one you chose. KEEL still checks sector alignment, overlaps and the end of the chip, and still verifies every region by digest — it just is not reading the archive's mind any more.</p>
+      <table><thead><tr><th>Offset</th><th>File</th><th></th></tr></thead><tbody>${
+        S.manual.map((m, i) => `<tr>
+          <td><input type="text" data-mo="${i}" value="${esc(K.addr(m.offset))}" size="10" spellcheck="false"></td>
+          <td><select data-mf="${i}"><option value="">— which file? —</option>${
+            bins.map(e => `<option${m.name === e.name ? " selected" : ""}>${esc(e.name)}</option>`).join("")}</select></td>
+          <td><button class="act" data-mx="${i}" style="margin:0;padding:4px 10px">Remove</button></td>
+        </tr>`).join("")}</tbody></table>
+      <button class="act" id="btn-manual-add" style="margin-top:12px">Add a write</button>
+      <button class="act" id="btn-manual-off" style="margin-top:12px">Go back to reading the script</button>
+    </div>`;
+    wrap.querySelectorAll("input[data-mo]").forEach(inp => inp.addEventListener("change", () => {
+      const t = inp.value.trim();
+      const v = /^0x[0-9a-f]+$/i.test(t) ? parseInt(t, 16) : parseInt(t, 10);
+      if (!isNaN(v)) S.manual[inp.dataset.mo].offset = v;
+      renderManual(); refreshPlan();
+    }));
+    wrap.querySelectorAll("select[data-mf]").forEach(sel => sel.addEventListener("change", () => {
+      S.manual[sel.dataset.mf].name = sel.value; renderManual(); refreshPlan();
+    }));
+    wrap.querySelectorAll("button[data-mx]").forEach(b => b.addEventListener("click", () => {
+      S.manual.splice(+b.dataset.mx, 1);
+      if (!S.manual.length) S.manual = [{ offset: 0, name: "" }];
+      renderManual(); refreshPlan();
+    }));
+    $("btn-manual-add").addEventListener("click", () => {
+      const last = S.manual[S.manual.length - 1];
+      S.manual.push({ offset: (last ? last.offset : 0) + 0x10000, name: "" });
+      renderManual(); refreshPlan();
+    });
+    $("btn-manual-off").addEventListener("click", () => { S.manual = null; renderManual(); refreshPlan(); });
+  }
+
   function refreshPlan() {
     const writes = currentWrites().filter(w => !w.skipWrite);
     const skipped = currentWrites().filter(w => w.skipWrite);
-    if (!S.entries.length || !writes.length) {
+    if (!S.entries.length || (!writes.length && !S.manual)) {
       $("plan-empty").classList.remove("hidden");
       $("plan-out").classList.add("hidden");
       S.plan = null;
@@ -1842,6 +1906,7 @@ K.FAULTS = [
     }
     $("plan-empty").classList.add("hidden");
     $("plan-out").classList.remove("hidden");
+    renderManual();
 
     const flashSize = parseInt($("flashsize").value, 10);
     S.plan = K.buildPlan({ entries: S.entries, writes, flashSize, skipFs: $("skip-fs").checked });
@@ -1959,7 +2024,7 @@ K.FAULTS = [
     };
     const timer = setInterval(tick, 200);
 
-    S.run = { started: new Date().toISOString(), skippedWrites: currentWrites().filter(w => w.skipWrite).map(w => ({ offset: K.addr(w.offset), token: w.token })), regions: [], chip: S.chip.name, mac: S.mac, flashSize: S.plan.flashSize, compressed: S.plan.compress, ok: false };
+    S.run = { started: new Date().toISOString(), planBuiltBy: S.manual ? "operator, by hand" : "the archive's install script", skippedWrites: currentWrites().filter(w => w.skipWrite).map(w => ({ offset: K.addr(w.offset), token: w.token })), regions: [], chip: S.chip.name, mac: S.mac, flashSize: S.plan.flashSize, compressed: S.plan.compress, ok: false };
 
     try {
       await S.loader.prepareFlash(S.plan.flashSize);

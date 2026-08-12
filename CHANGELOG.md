@@ -2,6 +2,28 @@
 
 All notable changes to KEEL. Versions are the single-file `keel.html`.
 
+## v1.3.0 — 2026-08-11
+
+### Added
+- **Build the plan by hand.** Station 04 offers "Ignore the script and build the
+  plan myself": an editable table of offset and file, seeded from whatever the
+  script did resolve. Add rows, remove rows, type offsets. Every check still
+  runs — sector alignment, overlap, end of chip, and digest verification on
+  every region. The run record notes that the plan was hand-built.
+  The script parser is a convenience and must never be the only way to reach the
+  hardware. Three releases in a row blocked a real flash on a parsing question;
+  that is the wrong thing to be blocking on.
+
+## v1.2.0 — 2026-08-11
+
+### Added
+- "Write nothing here" as an explicit choice on any script write. Skipped writes
+  are listed in station 04 as the operator's decision rather than the script's,
+  and recorded in the run record.
+
+### Fixed
+- The skipped-writes note stacked up a copy on every plan refresh.
+
 ## v1.1.0 — 2026-08-11
 
 Found on first contact with a real Meshtastic release archive on Windows.
