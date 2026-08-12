@@ -2,6 +2,32 @@
 
 All notable changes to KEEL. Versions are the single-file `keel.html`.
 
+## v1.5.0 — 2026-08-11
+
+### Added
+- **Station 02 now speaks the board's own language.** The DevKit V1 30-pin
+  silkscreen labels (`D5`, `D18`, `D27` …) sit alongside the GPIO numbers, with
+  the module pin each one goes to and which radio family needs it — SX127x wants
+  DIO0, SX126x wants DIO1, BUSY, RXEN and TXEN. Both headers are printed in the
+  order they are on the board, with the pins this build uses picked out.
+- Four wiring notes that are easy to get wrong: 3V3 not VIN, short SPI leads,
+  leave D12 clear, and the SPI four being split across both headers.
+- The board reference tables moved out of the interface section so the self-test
+  can check them: silk labels against header positions, every variant pin
+  against the silk map, no duplicate labels, and the SPI assignments against
+  what the firmware reported opening. 112 assertions.
+
+## v1.4.1 — 2026-08-11
+
+### Fixed
+- The boot reader summed radio attempts across resets, so a board that tried
+  seven radios twice was reported as fifteen failures in one boot. Captures are
+  now segmented on the ROM reset banner, findings are read from the most recent
+  boot, and a board that reset while you were watching is flagged as its own
+  problem.
+- Failures now name the radio variants the firmware named (SX1262 with TCXO,
+  SX1262 with XTAL, and so on) rather than collapsing them to "SX126x".
+
 ## v1.4.0 — 2026-08-11
 
 ### Fixed

@@ -35,7 +35,7 @@ in any browser.
 | | | |
 |---|---|---|
 | 01 | **Wire** | Open the port, walk the board into its bootloader one labelled step at a time, and identify the chip. |
-| 02 | **Board** | The `diy-v1` pin map, and the pre-flight checks worth making before anything is powered. |
+| 02 | **Board** | The `diy-v1` pin map in DevKit V1 silkscreen labels, the module pin each goes to, and the pre-flight checks worth making before anything is powered. |
 | 03 | **Image** | Drop the release archive. KEEL reads its contents, its install script, and every image header. |
 | 04 | **Plan** | Every region, offset, length and expected digest, as a document to approve before anything is sent. |
 | 05 | **Burn** | Execution, with THE MAP as the main view. |
@@ -81,9 +81,10 @@ not congratulate; it hands off.
 
 ## Before you flash a DIY board
 
-The `diy-v1` SPI pins are **not** the ESP32 defaults. SCK 5, MOSI 27, MISO 19,
-CS 18, RESET 23, DIO0 26, DIO1 33, DIO2 32. Wiring from habit puts SCK and CS on
-each other's pins and the radio never answers.
+The `diy-v1` SPI pins are **not** the ESP32 defaults. On a DevKit V1 silkscreen:
+SCK `D5`, MOSI `D27`, MISO `D19`, CS `D18`, RESET `D23`, DIO0 `D26`, DIO1 `D33`,
+BUSY `D32`. Wiring from habit puts SCK and CS on each other's pins and the radio
+never answers. Station 02 has the full table and both header columns.
 
 GPIO12 is the MTDI strapping pin. Held high at boot on a 3.3 V-flash WROOM-32 the
 chip will not start — and `diy-v1` puts GPS_RX on it.

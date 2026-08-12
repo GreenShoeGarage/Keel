@@ -245,14 +245,20 @@ footer{border-top:1px solid var(--rule);margin-top:40px;padding:18px 0;color:var
       <p class="small muted" style="margin-top:10px">Source: <code>meshtastic/firmware</code>, <code>variants/esp32/diy/v1/variant.h</code>, branch <code>develop</code>, read 2026-08-11. Re-read it before trusting this page — variants move.</p>
     </div>
     <div>
-      <h3>Pins, as the firmware names them</h3>
-      <table id="pintable"></table>
+      <h3>The 30-pin header, as it is printed</h3>
+      <div class="card" id="headers"></div>
       <div class="card warn" style="margin-top:16px">
         <h4>These are not the ESP32 default SPI pins</h4>
-        <p class="small" style="margin:0;color:var(--dim)">SCK 5, MOSI 27, MISO 19, CS 18. Wiring from habit (VSPI 18/23/19/5) puts SCK and CS on each other's pins and the radio never answers.</p>
+        <p class="small" style="margin:0;color:var(--dim)">SCK D5, MOSI D27, MISO D19, CS D18. Wiring from habit (VSPI 18/23/19/5) puts SCK and CS on each other's pins and the radio never answers.</p>
       </div>
     </div>
   </div>
+
+  <h3>Every pin the variant names</h3>
+  <table id="pintable"></table>
+
+  <h3>Worth getting right</h3>
+  <div class="grid2" id="wiring-notes"></div>
 
   <h3>Pre-flight</h3>
   <div class="card" id="preflight"></div>
@@ -456,7 +462,7 @@ footer{border-top:1px solid var(--rule);margin-top:40px;padding:18px 0;color:var
    ========================================================================== */
 
 const K = {};
-K.VERSION = "1.4.0";
+K.VERSION = "1.5.0";
 K.BUILT = "2026-08-11";
 
 /* ---------- bytes ---------------------------------------------------- */
@@ -1020,10 +1026,26 @@ K.RADIOLIB_ERRORS = {
   "-18": "SPI command failed",
 };
 
+/* The ROM prints a fixed banner on every reset, so a capture can hold several
+   boots. Summing attempts across them makes one board look like it tried
+   fifteen times when it tried seven, twice. */
+K.BOOT_BANNER = /(?=ets\s+\w+\s+\d+\s+\d{4}|rst:0x[0-9a-f]+\s*\()/gi;
+
+K.splitBoots = function (text) {
+  const parts = String(text).split(K.BOOT_BANNER).filter(p => p.trim().length);
+  return parts.length ? parts : [String(text)];
+};
+
 K.readBootLog = function (raw) {
-  const text = K.stripAnsi(raw || "");
+  const whole = K.stripAnsi(raw || "");
+  const boots = K.splitBoots(whole);
+  const text = boots[boots.length - 1];
   const out = [];
   const add = (level, title, body) => out.push({ level, title, body });
+
+  if (boots.length > 1)
+    add("warn", boots.length + " boots in this capture",
+      "The board has reset " + (boots.length - 1) + " time" + (boots.length > 2 ? "s" : "") + " while you were watching. Everything below is read from the most recent boot only. A board that keeps resetting is its own problem, separate from anything it reports.");
 
   const build = text.match(/S:B:\d+,([0-9][^,\s]*),([^,\s]+)/);
   if (build) add("info", "Firmware is running", "Version " + build[1] + ", variant " + build[2] + ".");
@@ -1049,8 +1071,10 @@ K.readBootLog = function (raw) {
   } else if (attempts.length) {
     const codes = [...new Set(attempts.map(a => a.code))];
     const why = codes.map(c => c + " (" + (K.RADIOLIB_ERRORS[String(c)] || "unrecognised RadioLib code") + ")").join(", ");
-    add("stop", "No radio answered — " + attempts.length + " attempt" + (attempts.length > 1 ? "s" : "") + ", all failed",
-      "The firmware tried " + [...new Set(attempts.map(a => a.chip))].join(", ") + " and got " + why +
+    const named = [...new Set((text.match(/No (\S+) radio(?: with (\w+))?/g) || []).map(s2 => s2.replace(/^No /, "").replace(/ radio/, "")))];
+    const tried = named.length ? named.join(", ") : [...new Set(attempts.map(a => a.chip))].join(", ");
+    add("stop", "No radio answered — " + attempts.length + " attempt" + (attempts.length > 1 ? "s" : "") + " in this boot, all failed",
+      "The firmware tried " + tried + " and got " + why +
       ". On a DIY build this is wiring, not firmware: nothing is responding on the SPI bus. If no module is fitted yet, this is exactly the expected log.");
   }
 
@@ -1162,6 +1186,72 @@ K.STATE_COLOR = {
   erasing: "var(--ember)", writing: "var(--ember)", verifying: "var(--ember)",
   verified: "var(--verd)", failed: "var(--red)",
 };
+
+/* ============================================================================
+   Board reference data. Lives here rather than with the interface so the
+   self-test can check it against itself with no DOM.
+   ========================================================================== */
+
+/* The 30-pin DOIT DevKit V1 header order, which the AITRIP and most other
+   clones follow. Both columns start at the antenna end. Printed here so an
+   operator can check the page against the silkscreen in front of them rather
+   than translating GPIO numbers in their head. */
+K.DEVKIT30 = {
+  a: ["EN", "VP", "VN", "D34", "D35", "D32", "D33", "D25", "D26", "D27", "D14", "D12", "D13", "GND", "VIN"],
+  b: ["3V3", "GND", "D15", "D2", "D4", "RX2", "TX2", "D5", "D18", "D19", "D21", "RX0", "TX0", "D22", "D23"],
+};
+K.SILK = {
+  1: "TX0", 2: "D2", 3: "RX0", 4: "D4", 5: "D5", 12: "D12", 13: "D13", 14: "D14",
+  15: "D15", 16: "RX2", 17: "TX2", 18: "D18", 19: "D19", 21: "D21", 22: "D22",
+  23: "D23", 25: "D25", 26: "D26", 27: "D27", 32: "D32", 33: "D33", 34: "D34",
+  35: "D35", 36: "VP", 39: "VN",
+};
+
+K.DIY_PINS = [
+  { sig: "LORA_SCK", pin: 5, to: "SCK", fam: "both", note: "SPI clock" },
+  { sig: "LORA_MISO", pin: 19, to: "MISO", fam: "both", note: "SPI in" },
+  { sig: "LORA_MOSI", pin: 27, to: "MOSI", fam: "both", note: "SPI out" },
+  { sig: "LORA_CS", pin: 18, to: "NSS / CS", fam: "both", note: "chip select" },
+  { sig: "LORA_RESET", pin: 23, to: "RST", fam: "both", note: "reset, both families" },
+  { sig: "LORA_DIO0", pin: 26, to: "DIO0", fam: "SX127x", note: "IRQ on SX127x; no connect on SX126x" },
+  { sig: "LORA_DIO1", pin: 33, to: "DIO1", fam: "SX126x", note: "IRQ on SX126x" },
+  { sig: "LORA_DIO2", pin: 32, to: "BUSY", fam: "SX126x", note: "the pin is marked BUSY, not DIO2" },
+  { sig: "RF95_RXEN", pin: 14, to: "RXEN", fam: "SX126x", note: "front-end switch; leave open on a bare RA-02" },
+  { sig: "RF95_TXEN / SX126X_TXEN", pin: 13, to: "TXEN", fam: "SX126x", note: "front-end switch; leave open on a bare RA-02" },
+  { sig: "I2C_SDA", pin: 21, to: "", fam: "", note: "OLED, if fitted" },
+  { sig: "I2C_SCL", pin: 22, to: "", fam: "", note: "OLED, if fitted" },
+  { sig: "BUTTON_PIN", pin: 39, to: "", fam: "", note: "input only" },
+  { sig: "BATTERY_PIN", pin: 35, to: "", fam: "", note: "input only; divider 470k / 680k, multiplier 1.85" },
+  { sig: "LED_POWER", pin: 2, to: "", fam: "", note: "status LED" },
+  { sig: "EXT_PWR_DETECT", pin: 4, to: "", fam: "", note: "external supply sense" },
+  { sig: "GPS_RX_PIN", pin: 12, to: "", fam: "", note: "MTDI strapping pin — leave clear unless a GPS is fitted" },
+  { sig: "GPS_TX_PIN", pin: 15, to: "", fam: "", note: "MTDO strapping pin" },
+];
+
+K.WIRING_NOTES = [
+  ["Power the module from 3V3, never VIN", "VIN is USB 5 V straight off the connector. Five volts onto an SX1276 or SX1262 ends the module."],
+  ["Keep the SPI leads short", "Under about 10 cm. Long dupont jumpers are the usual reason correct wiring still reports chip not found."],
+  ["Leave D12 clear", "GPIO12 is the MTDI strapping pin. Held high at boot on a 3.3 V-flash WROOM-32 the chip will not start, and diy-v1 puts GPS_RX on it."],
+  ["The SPI four are split across both headers", "D5, D18 and D19 are on one side, D27 on the other. That is the variant's choice, not a mistake in this table."],
+];
+
+K.PREFLIGHT = [
+  "An antenna is on the LoRa module. A bare module keyed even once can take the PA with it.",
+  "The module's band matches the region I intend to set: a 902–928 MHz part for US_915.",
+  "Nothing is holding GPIO12 high at boot. On a 3.3 V-flash WROOM-32 that stops the chip booting, and diy-v1 puts GPS_RX on it.",
+  "The radio's 3.3 V comes from the board regulator or a proper shield, not from a cell straight onto the rail.",
+  "SPI is wired 5 / 27 / 19 / 18, not the VSPI numbers I would have used from memory.",
+  "The board is on USB power alone for this, with no battery in circuit.",
+];
+
+K.FAULTS = [
+  ["nosync", "Board never answers a sync"],
+  ["garbage", "ROM boot text between frames"],
+  ["badstatus", "Bootloader refuses the third data block"],
+  ["stall", "Answers stop mid-write"],
+  ["drop", "Wire dies mid-write"],
+  ["md5bad", "Chip reports a digest that does not match"],
+];
 /* ============================================================================
    Section 3 — talking to the thing. One driver, two wires: a real serial port
    and a synthetic bootloader that answers the same commands.
@@ -1541,45 +1631,6 @@ K.Loader = class {
    sections 1 to 3 worked out, and collects the two approvals that matter.
    ========================================================================== */
 
-K.DIY_PINS = [
-  { sig: "LORA_SCK", pin: 5, note: "SPI clock" },
-  { sig: "LORA_MISO", pin: 19, note: "SPI in" },
-  { sig: "LORA_MOSI", pin: 27, note: "SPI out" },
-  { sig: "LORA_CS", pin: 18, note: "chip select (NSS)" },
-  { sig: "LORA_RESET", pin: 23, note: "reset, both radio families" },
-  { sig: "LORA_DIO0", pin: 26, note: "IRQ on SX127x; no connect on SX126x" },
-  { sig: "LORA_DIO1", pin: 33, note: "IRQ on SX126x" },
-  { sig: "LORA_DIO2", pin: 32, note: "BUSY on SX126x" },
-  { sig: "RF95_RXEN", pin: 14, note: "RX enable, SX127x front end" },
-  { sig: "RF95_TXEN / SX126X_TXEN", pin: 13, note: "TX enable" },
-  { sig: "I2C_SDA", pin: 21, note: "OLED, if fitted" },
-  { sig: "I2C_SCL", pin: 22, note: "OLED, if fitted" },
-  { sig: "BUTTON_PIN", pin: 39, note: "input only" },
-  { sig: "BATTERY_PIN", pin: 35, note: "input only; divider 470k / 680k, multiplier 1.85" },
-  { sig: "LED_POWER", pin: 2, note: "status LED" },
-  { sig: "EXT_PWR_DETECT", pin: 4, note: "external supply sense" },
-  { sig: "GPS_RX_PIN", pin: 12, note: "MTDI strapping pin — see the warning" },
-  { sig: "GPS_TX_PIN", pin: 15, note: "MTDO strapping pin" },
-];
-
-K.PREFLIGHT = [
-  "An antenna is on the LoRa module. A bare module keyed even once can take the PA with it.",
-  "The module's band matches the region I intend to set: a 902–928 MHz part for US_915.",
-  "Nothing is holding GPIO12 high at boot. On a 3.3 V-flash WROOM-32 that stops the chip booting, and diy-v1 puts GPS_RX on it.",
-  "The radio's 3.3 V comes from the board regulator or a proper shield, not from a cell straight onto the rail.",
-  "SPI is wired 5 / 27 / 19 / 18, not the VSPI numbers I would have used from memory.",
-  "The board is on USB power alone for this, with no battery in circuit.",
-];
-
-K.FAULTS = [
-  ["nosync", "Board never answers a sync"],
-  ["garbage", "ROM boot text between frames"],
-  ["badstatus", "Bootloader refuses the third data block"],
-  ["stall", "Answers stop mid-write"],
-  ["drop", "Wire dies mid-write"],
-  ["md5bad", "Chip reports a digest that does not match"],
-];
-
 (function () {
   const $ = id => document.getElementById(id);
   const esc = s => String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
@@ -1708,26 +1759,53 @@ K.FAULTS = [
   /* ---------- 02 board -------------------------------------------------- */
 
   (function drawBoard() {
-    const rows = K.DIY_PINS.map(p => `<tr><td>GPIO ${p.pin}</td><td>${esc(p.sig)}</td><td class="muted">${esc(p.note)}</td></tr>`).join("");
-    $("pintable").innerHTML = "<thead><tr><th>Pin</th><th>Firmware name</th><th>Note</th></tr></thead><tbody>" + rows + "</tbody>";
+    const fam = f => f === "SX127x" ? '<span class="tag" style="color:var(--verd);border-color:var(--verd)">SX127x</span>'
+      : f === "SX126x" ? '<span class="tag work">SX126x</span>'
+      : f === "both" ? '<span class="tag">both</span>' : "";
+    const rows = K.DIY_PINS.map(p => `<tr>
+        <td><b>${esc(K.SILK[p.pin] || "?")}</b></td>
+        <td class="muted">GPIO ${p.pin}</td>
+        <td>${esc(p.sig)}</td>
+        <td>${p.to ? esc(p.to) : '<span class="muted">—</span>'}</td>
+        <td>${fam(p.fam)}</td>
+        <td class="muted">${esc(p.note)}</td>
+      </tr>`).join("");
+    $("pintable").innerHTML = `<thead><tr><th>Board silk</th><th>GPIO</th><th>Firmware name</th><th>Module pin</th><th>Needed by</th><th>Note</th></tr></thead><tbody>${rows}</tbody>`;
 
-    const radio = K.DIY_PINS.slice(0, 10);
-    const H = 60 + radio.length * 30;
+    const radio = K.DIY_PINS.filter(p => p.to);
+    const H = 74 + radio.length * 30;
+    const colour = p => p.fam === "SX127x" ? "var(--verd)" : p.fam === "SX126x" ? "var(--ember)" : "var(--brass)";
     const lines = radio.map((p, i) => {
-      const y = 52 + i * 30;
-      return `<line x1="120" y1="${y}" x2="330" y2="${y}" stroke="var(--rule)"/>
-        <text x="112" y="${y + 4}" text-anchor="end" font-size="12" fill="var(--bone)" font-family="var(--data)">GPIO ${p.pin}</text>
-        <text x="225" y="${y - 5}" text-anchor="middle" font-size="10.5" fill="var(--brass)" font-family="var(--data)">${esc(p.sig)}</text>
-        <circle cx="120" cy="${y}" r="3" fill="var(--brass)"/><circle cx="330" cy="${y}" r="3" fill="var(--brass)"/>`;
+      const y = 62 + i * 30;
+      return `<line x1="132" y1="${y}" x2="330" y2="${y}" stroke="${colour(p)}" stroke-width="0.7"/>
+        <text x="124" y="${y + 4}" text-anchor="end" font-size="12" fill="var(--bone)" font-family="var(--data)">${esc(K.SILK[p.pin])}</text>
+        <text x="231" y="${y - 5}" text-anchor="middle" font-size="10" fill="var(--faint)" font-family="var(--data)">GPIO ${p.pin}</text>
+        <text x="338" y="${y + 4}" font-size="12" fill="var(--bone)" font-family="var(--data)">${esc(p.to)}</text>
+        <circle cx="132" cy="${y}" r="2.5" fill="${colour(p)}"/><circle cx="330" cy="${y}" r="2.5" fill="${colour(p)}"/>`;
     }).join("");
-    $("pinmap").innerHTML = `<svg viewBox="0 0 460 ${H}" role="img" aria-label="diy-v1 signal map from the ESP32 to the LoRa module">
-      <rect x="14" y="30" width="106" height="${H - 60}" fill="none" stroke="var(--rule)"/>
-      <text x="67" y="22" text-anchor="middle" font-size="11" fill="var(--dim)" font-family="var(--data)">ESP-WROOM-32</text>
-      <rect x="330" y="30" width="112" height="${H - 60}" fill="none" stroke="var(--rule)"/>
-      <text x="386" y="22" text-anchor="middle" font-size="11" fill="var(--dim)" font-family="var(--data)">SX127x / SX126x</text>
+    $("pinmap").innerHTML = `<svg viewBox="0 0 460 ${H}" role="img" aria-label="diy-v1 wiring from the DevKit V1 silkscreen labels to the LoRa module">
+      <text x="80" y="26" text-anchor="middle" font-size="11" fill="var(--dim)" font-family="var(--data)">DevKit V1 silk</text>
+      <text x="380" y="26" text-anchor="middle" font-size="11" fill="var(--dim)" font-family="var(--data)">module pin</text>
+      <line x1="18" y1="40" x2="442" y2="40" stroke="var(--rule)"/>
       ${lines}
-      <text x="230" y="${H - 12}" text-anchor="middle" font-size="10.5" fill="var(--faint)" font-family="var(--data)">plus 3V3 and GND — signals only above</text>
+      <text x="18" y="${H - 26}" font-size="10" fill="var(--brass)" font-family="var(--data)">brass = both families</text>
+      <text x="176" y="${H - 26}" font-size="10" fill="var(--verd)" font-family="var(--data)">green = SX127x only</text>
+      <text x="330" y="${H - 26}" font-size="10" fill="var(--ember)" font-family="var(--data)">ember = SX126x only</text>
+      <text x="18" y="${H - 10}" font-size="10" fill="var(--faint)" font-family="var(--data)">plus 3V3 to VCC and GND to GND</text>
     </svg>`;
+
+    const col = arr => arr.map(l => {
+      const used = K.DIY_PINS.some(p => p.to && K.SILK[p.pin] === l);
+      return `<div style="padding:3px 0;border-bottom:1px solid #1f2b35;${used ? "color:var(--brass)" : "color:var(--dim)"}">${esc(l)}</div>`;
+    }).join("");
+    $("headers").innerHTML = `<div class="grid2" style="gap:26px">
+      <div><div class="mono" style="color:var(--faint);margin-bottom:6px">header A</div>${col(K.DEVKIT30.a)}</div>
+      <div><div class="mono" style="color:var(--faint);margin-bottom:6px">header B</div>${col(K.DEVKIT30.b)}</div>
+    </div>
+    <p class="small muted" style="margin:12px 0 0">Both columns read from the antenna end. Brass labels are pins this build uses. This is the DOIT DevKit V1 30-pin order that the AITRIP and most other clones follow — check it against the silkscreen in front of you before cutting wire.</p>`;
+
+    $("wiring-notes").innerHTML = K.WIRING_NOTES.map(([h, b]) =>
+      `<div class="card warn"><h4>${esc(h)}</h4><p class="small" style="margin:0;color:var(--dim)">${esc(b)}</p></div>`).join("");
 
     $("preflight").innerHTML = K.PREFLIGHT
       .map((t, i) => `<label class="check"><input type="checkbox" data-pf="${i}"> ${esc(t)}</label>`).join("");
@@ -2697,6 +2775,33 @@ K.selfTest = async function () {
   } catch (e) { ok("ROM boot chatter between frames does not derail the handshake", false, e.message); }
 
 
+
+  /* --- the board table --- */
+  group("Board reference");
+  (function () {
+    const silkVals = Object.values(K.SILK);
+    const headers = K.DEVKIT30.a.concat(K.DEVKIT30.b);
+    ok("both headers carry 15 pins", K.DEVKIT30.a.length === 15 && K.DEVKIT30.b.length === 15);
+    ok("every silk label maps to a header position", silkVals.every(l => headers.includes(l)),
+      silkVals.filter(l => !headers.includes(l)).join(","));
+    const powerAndGnd = ["EN", "GND", "VIN", "3V3"];
+    ok("every header label that is a GPIO has a silk mapping",
+      headers.filter(l => !powerAndGnd.includes(l)).every(l => silkVals.includes(l)),
+      headers.filter(l => !powerAndGnd.includes(l) && !silkVals.includes(l)).join(","));
+    ok("no silk label is used for two GPIOs", new Set(silkVals).size === silkVals.length);
+    ok("every pin the variant names has a silk label", K.DIY_PINS.every(p => K.SILK[p.pin]),
+      K.DIY_PINS.filter(p => !K.SILK[p.pin]).map(p => p.pin).join(","));
+    const wired = K.DIY_PINS.filter(p => p.to);
+    ok("every wired pin says which radio family needs it", wired.every(p => ["both", "SX127x", "SX126x"].includes(p.fam)));
+    ok("the SPI four and reset are needed by both families",
+      [5, 19, 27, 18, 23].every(n => K.DIY_PINS.find(p => p.pin === n).fam === "both"));
+    ok("DIO0 is SX127x only and BUSY is SX126x only",
+      K.DIY_PINS.find(p => p.pin === 26).fam === "SX127x" && K.DIY_PINS.find(p => p.pin === 32).fam === "SX126x");
+    ok("the SPI pins here are the ones the firmware reported opening",
+      [5, 19, 27, 18].map(n => K.DIY_PINS.find(p => p.pin === n).to).join(",") === "SCK,MISO,MOSI,NSS / CS");
+    ok("GPIO12 carries its strapping-pin warning", /strapping/i.test(K.DIY_PINS.find(p => p.pin === 12).note));
+  })();
+
   /* --- boot log --- */
   group("Boot log");
   (function () {
@@ -2710,6 +2815,17 @@ K.selfTest = async function () {
     ok("the diy-v1 SPI pins are recognised as correct", f.some(x => /SPI bus opened on 5 \/ 19 \/ 27 \/ 18/.test(x.title) && x.level === "info"));
     ok("an unset region is flagged", f.some(x => x.level === "warn" && /Region is UNSET/.test(x.title)));
     ok("ANSI escapes are stripped before anything is matched", !/\u001b/.test(K.stripAnsi(K.VEC.bootLogNoRadio)));
+  })();
+  (function () {
+    const banner = "ets Jul 29 2019 12:21:46\r\nrst:0x1 (POWERON_RESET),boot:0x13\r\n";
+    const twice = banner + K.VEC.bootLogNoRadio + "\r\n" + banner + "RF95 init result -2\r\nNo RF95 radio\r\n";
+    const f = K.readBootLog(twice);
+    ok("several boots in one capture are noticed", f.some(x => /boots in this capture/.test(x.title)));
+    ok("attempts are counted per boot, not summed across resets", f.some(x => /1 attempt in this boot/.test(x.title)), f.map(x => x.title).join(" | "));
+  })();
+  (function () {
+    const f = K.readBootLog(K.VEC.bootLogNoRadio);
+    ok("the specific radio variants the firmware named are reported", f.some(x => /SX1262 with TCXO/.test(x.body) || /RF95/.test(x.body)));
   })();
   (function () {
     const f = K.readBootLog("SX126x init result 0\nSet radio: region=US");
