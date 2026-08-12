@@ -1,0 +1,2502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KEEL — Meshtastic onto a bare ESP32</title>
+<style>
+:root{
+  --sea:#0d141a; --deck:#151f27; --deck2:#1b2732; --rule:#2a3a47;
+  --bone:#dbe4ea; --dim:#8397a5; --faint:#5d707e;
+  --brass:#c9a227; --verd:#4ea391; --ember:#d2763c; --red:#c2453f;
+  --display:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  --body:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --data:ui-monospace,SFMono-Regular,Menlo,Consolas,"DejaVu Sans Mono",monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--sea); color:var(--bone); font-family:var(--body);
+  font-size:15px; line-height:1.5; -webkit-font-smoothing:antialiased;
+}
+a{color:var(--verd)}
+.wrap{max-width:1180px;margin:0 auto;padding:0 18px 90px}
+
+/* ---- masthead ---- */
+header.mast{border-bottom:1px solid var(--rule);padding:26px 0 18px;margin-bottom:0}
+.mast-in{display:flex;align-items:flex-end;gap:18px;flex-wrap:wrap}
+h1{
+  font-family:var(--display); font-weight:400; font-size:44px; line-height:1;
+  margin:0; letter-spacing:.14em; text-transform:uppercase;
+}
+h1 .fi{font-size:13px;letter-spacing:.28em;color:var(--faint);display:block;margin-bottom:8px;font-family:var(--data);text-transform:none}
+.mast p{margin:0 0 4px;color:var(--dim);font-size:14px;max-width:52ch}
+.mast .ver{margin-left:auto;font-family:var(--data);font-size:12px;color:var(--faint);text-align:right}
+
+/* ---- station bar ---- */
+nav.stations{
+  display:flex;gap:0;flex-wrap:wrap;border-bottom:1px solid var(--rule);
+  position:sticky;top:0;background:var(--sea);z-index:20;
+}
+nav.stations button{
+  appearance:none;background:none;border:0;border-bottom:2px solid transparent;
+  color:var(--dim);font-family:var(--data);font-size:12px;letter-spacing:.1em;
+  padding:12px 14px;cursor:pointer;text-transform:uppercase;
+}
+nav.stations button:hover{color:var(--bone)}
+nav.stations button[aria-selected="true"]{color:var(--brass);border-bottom-color:var(--brass)}
+nav.stations button:focus-visible{outline:2px solid var(--verd);outline-offset:-2px}
+nav.stations .num{color:var(--faint);margin-right:7px}
+nav.stations button[aria-selected="true"] .num{color:var(--brass)}
+
+/* ---- panels ---- */
+section.station{display:none;padding-top:24px}
+section.station.on{display:block}
+h2{font-family:var(--display);font-weight:400;font-size:26px;margin:0 0 4px;letter-spacing:.02em}
+h2 .eyebrow{display:block;font-family:var(--data);font-size:11px;letter-spacing:.26em;color:var(--faint);text-transform:uppercase;margin-bottom:7px}
+h3{font-family:var(--data);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);margin:26px 0 10px;font-weight:400}
+.lede{color:var(--dim);max-width:70ch;margin:0 0 18px}
+.card{background:var(--deck);border:1px solid var(--rule);padding:16px 18px;margin:0 0 16px}
+.card.warn{border-left:3px solid var(--ember)}
+.card.stop{border-left:3px solid var(--red)}
+.card.good{border-left:3px solid var(--verd)}
+.card h4{margin:0 0 8px;font-size:14px;font-family:var(--body);font-weight:600}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.grid-map{display:grid;grid-template-columns:300px 1fr;gap:22px;align-items:start}
+@media(max-width:820px){.grid2,.grid-map{grid-template-columns:1fr}}
+
+/* ---- controls ---- */
+button.act{
+  font-family:var(--data);font-size:12px;letter-spacing:.1em;text-transform:uppercase;
+  background:transparent;color:var(--bone);border:1px solid var(--rule);
+  padding:9px 15px;cursor:pointer;margin:0 8px 8px 0;
+}
+button.act:hover:not(:disabled){border-color:var(--brass);color:var(--brass)}
+button.act:focus-visible{outline:2px solid var(--verd);outline-offset:2px}
+button.act:disabled{opacity:.35;cursor:not-allowed}
+button.act.primary{border-color:var(--brass);color:var(--brass)}
+button.act.danger{border-color:var(--red);color:var(--red)}
+label.f{display:block;font-family:var(--data);font-size:11px;letter-spacing:.14em;color:var(--faint);text-transform:uppercase;margin:0 0 5px}
+select,input[type=text],input[type=number]{
+  background:var(--sea);color:var(--bone);border:1px solid var(--rule);
+  font-family:var(--data);font-size:13px;padding:7px 9px;
+}
+input[type=checkbox]{accent-color:var(--brass)}
+.row{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px}
+.check{font-family:var(--body);font-size:14px;display:flex;gap:9px;align-items:flex-start;margin:0 0 9px;color:var(--bone)}
+.check input{margin-top:3px}
+.dropzone{
+  border:1px dashed var(--rule);padding:30px 18px;text-align:center;color:var(--dim);
+  font-family:var(--data);font-size:13px;cursor:pointer;background:var(--deck);
+}
+.dropzone.hot{border-color:var(--brass);color:var(--brass)}
+
+/* ---- data ---- */
+table{border-collapse:collapse;width:100%;font-family:var(--data);font-size:12.5px}
+th{
+  text-align:left;color:var(--faint);font-weight:400;letter-spacing:.12em;text-transform:uppercase;
+  font-size:10.5px;border-bottom:1px solid var(--rule);padding:7px 10px 7px 0;
+}
+td{border-bottom:1px solid #1f2b35;padding:7px 10px 7px 0;vertical-align:top;color:var(--bone)}
+td.n{text-align:right;padding-right:18px}
+.kv{font-family:var(--data);font-size:12.5px}
+.kv div{display:flex;gap:12px;padding:4px 0;border-bottom:1px solid #1f2b35}
+.kv span:first-child{color:var(--faint);min-width:170px;letter-spacing:.06em}
+.kv span:last-child{color:var(--bone);word-break:break-all}
+code,.mono{font-family:var(--data);font-size:12.5px}
+.tag{font-family:var(--data);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;padding:2px 7px;border:1px solid var(--rule);color:var(--dim)}
+.tag.ok{color:var(--verd);border-color:var(--verd)}
+.tag.bad{color:var(--red);border-color:var(--red)}
+.tag.work{color:var(--ember);border-color:var(--ember)}
+.tag.plan{color:var(--faint)}
+.assume{color:var(--brass)}
+.muted{color:var(--dim)}
+.small{font-size:13px}
+.lane{
+  background:#0a1015;border:1px solid var(--rule);height:260px;overflow-y:auto;
+  font-family:var(--data);font-size:11.5px;padding:9px 11px;line-height:1.65;
+}
+.lane div{white-space:pre-wrap;word-break:break-all}
+.lane .tx{color:var(--dim)}
+.lane .rx{color:var(--verd)}
+.lane .err{color:var(--red)}
+.lane .note{color:var(--brass)}
+.log{background:#0a1015;border:1px solid var(--rule);height:220px;overflow-y:auto;font-family:var(--data);font-size:11.5px;padding:9px 11px;white-space:pre-wrap}
+
+/* ---- the map ---- */
+.map-frame{background:var(--deck);border:1px solid var(--rule);padding:14px}
+.map-frame svg{display:block;width:100%;height:auto}
+.map-legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:12px;font-family:var(--data);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
+.map-legend i{display:inline-block;width:10px;height:10px;margin-right:5px;vertical-align:-1px;border:1px solid currentColor}
+
+/* ---- steps (reset dance) ---- */
+ol.steps{list-style:none;margin:0;padding:0;font-family:var(--data);font-size:12.5px}
+ol.steps li{padding:7px 0 7px 26px;border-bottom:1px solid #1f2b35;position:relative;color:var(--dim)}
+ol.steps li::before{content:"○";position:absolute;left:4px;color:var(--faint)}
+ol.steps li.done{color:var(--bone)}
+ol.steps li.done::before{content:"●";color:var(--verd)}
+ol.steps li.now{color:var(--ember)}
+ol.steps li.now::before{content:"◐";color:var(--ember)}
+ol.steps li.fail::before{content:"✕";color:var(--red)}
+ol.steps li.fail{color:var(--red)}
+
+/* ---- progress ---- */
+.bar{height:6px;background:#0a1015;border:1px solid var(--rule);margin:8px 0}
+.bar i{display:block;height:100%;background:var(--ember);width:0}
+.stat{display:flex;gap:26px;flex-wrap:wrap;font-family:var(--data);font-size:12px;color:var(--dim);margin:10px 0}
+.stat b{color:var(--bone);font-weight:400}
+
+footer{border-top:1px solid var(--rule);margin-top:40px;padding:18px 0;color:var(--faint);font-family:var(--data);font-size:11.5px;letter-spacing:.06em}
+.hidden{display:none!important}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="mast">
+  <div class="mast-in">
+    <div>
+      <h1><span class="fi">Field Instrument FI-221 (proposed)</span>KEEL</h1>
+      <p>Lays the bootloader on a bare ESP32 and proves it landed. WATCHFIRE sails it afterward.</p>
+    </div>
+    <div class="ver">
+      <div id="verline">v1.0.0</div>
+      <div id="selftest-badge" class="muted">self-test not run</div>
+    </div>
+  </div>
+</header>
+
+<nav class="stations" role="tablist" id="tabs">
+  <button role="tab" data-st="wire"><span class="num">01</span>Wire</button>
+  <button role="tab" data-st="board"><span class="num">02</span>Board</button>
+  <button role="tab" data-st="image"><span class="num">03</span>Image</button>
+  <button role="tab" data-st="plan"><span class="num">04</span>Plan</button>
+  <button role="tab" data-st="burn"><span class="num">05</span>Burn</button>
+  <button role="tab" data-st="proof"><span class="num">06</span>Proof</button>
+  <button role="tab" data-st="handoff"><span class="num">07</span>Handoff</button>
+  <button role="tab" data-st="sim"><span class="num">08</span>Simulator</button>
+</nav>
+
+<!-- ================= 01 WIRE ================= -->
+<section class="station" id="st-wire">
+  <h2><span class="eyebrow">Station 01</span>Wire</h2>
+  <p class="lede">Open the port, walk the board into its ROM bootloader, and find out what is actually on the other end. Every step below is shown separately because on cheap boards the failure is always one specific step.</p>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <label class="f" for="baud">Bootloader baud</label>
+        <select id="baud">
+          <option value="115200" selected>115200</option>
+          <option value="230400">230400</option>
+          <option value="460800">460800</option>
+          <option value="921600">921600</option>
+        </select>
+      </div>
+      <div>
+        <label class="f" for="src">Wire</label>
+        <select id="src">
+          <option value="serial" selected>Web Serial (real board)</option>
+          <option value="sim">Simulator (nothing plugged in)</option>
+        </select>
+      </div>
+      <div>
+        <button class="act primary" id="btn-connect">Connect and identify</button>
+        <button class="act" id="btn-disconnect" disabled>Release port</button>
+      </div>
+    </div>
+    <div id="serial-unsupported" class="hidden small" style="color:var(--ember)">
+      This browser does not expose Web Serial. Chrome, Edge or Opera on desktop will. The simulator works anywhere.
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div>
+      <h3>Reset into the bootloader</h3>
+      <ol class="steps" id="reset-steps"></ol>
+      <div id="reset-help" class="card warn hidden small" style="margin-top:14px">
+        <h4>The board did not answer</h4>
+        <p class="small" style="margin:0 0 8px">Three causes, in the order they actually happen:</p>
+        <ol class="small" style="margin:0;padding-left:18px;color:var(--dim)">
+          <li><b>No auto-reset circuit.</b> Many clone boards omit the two transistors. Hold BOOT, tap EN, release EN, then release BOOT, and press connect again.</li>
+          <li><b>No driver.</b> A CP2102 needs the Silicon Labs VCP driver on Windows and older macOS; a CH340 needs its own. Linux has both in-tree.</li>
+          <li><b>A charging cable.</b> USB cables without data lines are common and look identical. If no port appears in the chooser at all, this is why.</li>
+        </ol>
+      </div>
+    </div>
+    <div>
+      <h3>What is on the wire</h3>
+      <div class="kv" id="chip-kv"><div><span>state</span><span class="muted">nothing connected</span></div></div>
+      <h3>Protocol lane</h3>
+      <div class="lane" id="lane-wire"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 02 BOARD ================= -->
+<section class="station" id="st-board">
+  <h2><span class="eyebrow">Station 02</span>Board</h2>
+  <p class="lede">A flashed board with the wrong pins is a brick that boots cleanly. This is the wiring the stock <code>diy-v1</code> build expects, and the checks worth making before any of it is powered.</p>
+
+  <div class="grid2">
+    <div>
+      <h3>diy-v1 pin map</h3>
+      <div class="map-frame" id="pinmap"></div>
+      <p class="small muted" style="margin-top:10px">Source: <code>meshtastic/firmware</code>, <code>variants/esp32/diy/v1/variant.h</code>, branch <code>develop</code>, read 2026-08-11. Re-read it before trusting this page — variants move.</p>
+    </div>
+    <div>
+      <h3>Pins, as the firmware names them</h3>
+      <table id="pintable"></table>
+      <div class="card warn" style="margin-top:16px">
+        <h4>These are not the ESP32 default SPI pins</h4>
+        <p class="small" style="margin:0;color:var(--dim)">SCK 5, MOSI 27, MISO 19, CS 18. Wiring from habit (VSPI 18/23/19/5) puts SCK and CS on each other's pins and the radio never answers.</p>
+      </div>
+    </div>
+  </div>
+
+  <h3>Pre-flight</h3>
+  <div class="card" id="preflight"></div>
+  <p class="small muted">These are checks you make, not checks KEEL makes. Nothing here is verified by this program — ticking a box records that you looked.</p>
+</section>
+
+<!-- ================= 03 IMAGE ================= -->
+<section class="station" id="st-image">
+  <h2><span class="eyebrow">Station 03</span>Image</h2>
+  <p class="lede">Drop the Meshtastic release archive. KEEL reads what is in it, reads the install script that ships inside it, and takes its offsets from that script rather than from anything hard-coded here.</p>
+
+  <div class="dropzone" id="drop">
+    Drop <code>firmware-*.zip</code> here, or loose <code>.bin</code> files — or click to choose
+    <input type="file" id="file" multiple accept=".zip,.bin,.sh,.bat" class="hidden">
+  </div>
+
+  <div id="image-out" class="hidden">
+    <h3>Archive contents</h3>
+    <table id="zip-table"></table>
+
+    <h3>Install script, as read</h3>
+    <div class="card" id="script-card"></div>
+
+    <h3>Image headers</h3>
+    <table id="hdr-table"></table>
+    <p class="small muted">KEEL does not rewrite the flash mode or the size/frequency byte. What the image declares is what gets written. Espressif's tools rewrite these bytes by default; this bench leaves the image alone so that what you verify is what the vendor shipped.</p>
+
+    <div id="variant-gate"></div>
+  </div>
+</section>
+
+<!-- ================= 04 PLAN ================= -->
+<section class="station" id="st-plan">
+  <h2><span class="eyebrow">Station 04</span>Plan</h2>
+  <p class="lede">Everything that will happen, before anything happens. Nothing is sent to the board until this page is approved.</p>
+  <div id="plan-empty" class="card"><p class="small muted" style="margin:0">No plan yet. Load a release in station 03.</p></div>
+  <div id="plan-out" class="hidden">
+    <div class="row">
+      <div>
+        <label class="f" for="flashsize">Flash size on this chip</label>
+        <select id="flashsize">
+          <option value="2097152">2 MB</option>
+          <option value="4194304" selected>4 MB</option>
+          <option value="8388608">8 MB</option>
+          <option value="16777216">16 MB</option>
+        </select>
+      </div>
+      <div>
+        <label class="f" for="compress">Transfer</label>
+        <select id="compress">
+          <option value="1" selected>Compressed (deflate)</option>
+          <option value="0">Uncompressed</option>
+        </select>
+      </div>
+      <div>
+        <label class="f">&nbsp;</label>
+        <label class="check" style="margin:0"><input type="checkbox" id="skip-fs"> Skip the filesystem image</label>
+      </div>
+    </div>
+    <div class="card warn small" id="flashsize-note"></div>
+    <table id="plan-table"></table>
+    <div class="card warn" style="margin-top:18px">
+      <h4>Erase</h4>
+      <p class="small" style="margin:0 0 8px;color:var(--dim)">KEEL runs the ROM bootloader only. The ROM cannot erase the whole chip and cannot read flash back, so:</p>
+      <ul class="small" style="margin:0;padding-left:18px;color:var(--dim)">
+        <li>Each region below is erased as it is written. Nothing else on the chip is touched.</li>
+        <li>Whatever is in those regions now is gone. There is no backup, and KEEL will not offer you a button that pretends otherwise.</li>
+        <li>A whole-chip erase needs the stub loader. If you need one, use <code>esptool erase_flash</code> and come back.</li>
+      </ul>
+    </div>
+    <div class="card" id="plan-approve">
+      <label class="check"><input type="checkbox" id="ack-plan"> I have read the plan above and the regions listed are the regions I want overwritten.</label>
+      <button class="act primary" id="btn-approve" disabled>Approve plan and open station 05</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 05 BURN ================= -->
+<section class="station" id="st-burn">
+  <h2><span class="eyebrow">Station 05</span>Burn</h2>
+  <p class="lede">The map is the truth of the run. Bands fill as bytes land and go solid only when the chip's own digest agrees with ours.</p>
+  <div class="grid-map">
+    <div>
+      <div class="map-frame">
+        <div id="map"></div>
+        <div class="map-legend">
+          <span style="color:var(--faint)"><i></i>planned</span>
+          <span style="color:var(--ember)"><i></i>erasing / writing</span>
+          <span style="color:var(--verd)"><i></i>verified</span>
+          <span style="color:var(--red)"><i></i>failed</span>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="row">
+        <button class="act primary" id="btn-burn" disabled>Write the plan</button>
+        <button class="act danger hidden" id="btn-abort">Stop</button>
+      </div>
+      <div class="bar"><i id="bar-fill"></i></div>
+      <div class="stat">
+        <span>sent <b id="s-sent">0</b></span>
+        <span>of <b id="s-total">0</b></span>
+        <span>elapsed <b id="s-time">0.0 s</b></span>
+        <span>rate <b id="s-rate">—</b></span>
+        <span>retries <b id="s-retry">0</b></span>
+      </div>
+      <div id="burn-msg"></div>
+      <h3>Protocol lane</h3>
+      <div class="lane" id="lane-burn"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 06 PROOF ================= -->
+<section class="station" id="st-proof">
+  <h2><span class="eyebrow">Station 06</span>Proof</h2>
+  <p class="lede">What was written, where, and whether the chip agrees. This is the record that makes a node traceable a year from now.</p>
+  <div id="proof-empty" class="card"><p class="small muted" style="margin:0">No run yet.</p></div>
+  <div id="proof-out" class="hidden">
+    <table id="proof-table"></table>
+    <div class="row" style="margin-top:18px">
+      <button class="act" id="btn-export-json">Save record (JSON)</button>
+      <button class="act" id="btn-export-txt">Save record (text)</button>
+    </div>
+    <div class="card" id="proof-verdict"></div>
+  </div>
+</section>
+
+<!-- ================= 07 HANDOFF ================= -->
+<section class="station" id="st-handoff">
+  <h2><span class="eyebrow">Station 07</span>Handoff</h2>
+  <p class="lede">A verified write is not a working node. Two things always come next.</p>
+
+  <div class="card stop">
+    <h4>The region is unset, and the radio will not transmit</h4>
+    <p class="small" style="margin:0;color:var(--dim)">Meshtastic ships with the LoRa region deliberately unset, and holds the transmitter off until someone sets it. This is not a fault to debug. Set it in WATCHFIRE, or over the CLI, before expecting any traffic. Match it to the module you actually soldered on: a 915&nbsp;MHz part on a 433&nbsp;MHz region setting is a radio that talks to nothing, and a 433&nbsp;MHz part told to run US_915 is worse than useless.</p>
+  </div>
+
+  <div class="card">
+    <h4>Then hand off to WATCHFIRE</h4>
+    <p class="small" style="margin:0;color:var(--dim)">KEEL's job ends at the bootloader. Configuration, channels, codeplug and telemetry are WATCHFIRE's. Release the port here before opening it there — two pages cannot hold the same serial port.</p>
+  </div>
+
+  <div class="row">
+    <button class="act primary" id="btn-run-app" disabled>Reset into the application</button>
+    <button class="act" id="btn-mon" disabled>Watch the boot log (115200)</button>
+    <button class="act" id="btn-mon-stop" disabled>Stop watching</button>
+  </div>
+  <div id="boot-findings"></div>
+  <h3>Boot log</h3>
+  <div class="log" id="bootlog"></div>
+</section>
+
+<!-- ================= 08 SIMULATOR ================= -->
+<section class="station" id="st-sim">
+  <h2><span class="eyebrow">Station 08</span>Simulator</h2>
+  <p class="lede">A synthetic ESP32 ROM bootloader answering the same command set on the same framing. Pick a fault, then run the whole instrument against it with nothing plugged in.</p>
+
+  <div class="grid2">
+    <div>
+      <h3>Faults</h3>
+      <div class="card" id="faults"></div>
+      <div class="row">
+        <div>
+          <label class="f" for="sim-size">Simulated flash</label>
+          <select id="sim-size">
+            <option value="2097152">2 MB</option>
+            <option value="4194304" selected>4 MB</option>
+            <option value="8388608">8 MB</option>
+          </select>
+        </div>
+        <div>
+          <button class="act" id="btn-sim-load">Load a synthetic release into station 03</button>
+        </div>
+      </div>
+    </div>
+    <div>
+      <h3>Self-test</h3>
+      <p class="small muted">Offline, in this page, against the simulator. It exercises the codecs, the parsers, the planner, the map, and a whole failing burn.</p>
+      <button class="act primary" id="btn-selftest">Run self-test</button>
+      <div class="log" id="selftest-out" style="height:340px"></div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  KEEL — single file, no network, no build step. Firmware comes from your disk and nothing here downloads anything.
+  <span id="foot-ver"></span>
+</footer>
+</div>
+<script>
+"use strict";
+/* ============================================================================
+   KEEL — FI-221 (proposed). Meshtastic firmware onto a bare ESP32, over the
+   ROM serial bootloader, with a paper trail.
+
+   One file. No network. No build step. Firmware comes from your disk.
+
+   Section 1 — bytes, digests, and the compressed formats we have to speak.
+   ========================================================================== */
+
+const K = {};
+K.VERSION = "1.0.0";
+K.BUILT = "2026-08-11";
+
+/* ---------- bytes ---------------------------------------------------- */
+
+K.hex = b => Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
+K.addr = n => "0x" + (n >>> 0).toString(16).toUpperCase().padStart(6, "0");
+K.bytesHuman = n => {
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(n < 10240 ? 1 : 0) + " KB";
+  return (n / 1048576).toFixed(n < 10485760 ? 2 : 1) + " MB";
+};
+K.concat = (...arrs) => {
+  let n = 0; for (const a of arrs) n += a.length;
+  const out = new Uint8Array(n); let o = 0;
+  for (const a of arrs) { out.set(a, o); o += a.length; }
+  return out;
+};
+K.packU32 = (...vals) => {
+  const b = new Uint8Array(vals.length * 4), dv = new DataView(b.buffer);
+  vals.forEach((v, i) => dv.setUint32(i * 4, v >>> 0, true));
+  return b;
+};
+K.u32 = (b, o) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0;
+K.u16 = (b, o) => (b[o] | (b[o + 1] << 8));
+K.ascii = b => Array.from(b, c => String.fromCharCode(c)).join("");
+K.fromAscii = s => Uint8Array.from(s, c => c.charCodeAt(0) & 0xff);
+K.sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/* ---------- MD5 -------------------------------------------------------
+   Hand-rolled because the browser will not give us a synchronous digest and
+   because this one number is the entire basis on which KEEL claims a write
+   succeeded. RFC 1321 vectors are in the self-test.                       */
+
+K.md5 = function (input) {
+  const msg = input instanceof Uint8Array ? input : K.fromAscii(String(input));
+  const S = [7,12,17,22,7,12,17,22,7,12,17,22,7,12,17,22,
+             5,9,14,20,5,9,14,20,5,9,14,20,5,9,14,20,
+             4,11,16,23,4,11,16,23,4,11,16,23,4,11,16,23,
+             6,10,15,21,6,10,15,21,6,10,15,21,6,10,15,21];
+  const T = new Int32Array(64);
+  for (let i = 0; i < 64; i++) T[i] = (Math.abs(Math.sin(i + 1)) * 4294967296) | 0;
+
+  const len = msg.length;
+  const withPad = (((len + 8) >> 6) + 1) << 6;
+  const buf = new Uint8Array(withPad);
+  buf.set(msg);
+  buf[len] = 0x80;
+  const dv = new DataView(buf.buffer);
+  dv.setUint32(withPad - 8, (len << 3) >>> 0, true);
+  dv.setUint32(withPad - 4, Math.floor(len / 536870912) >>> 0, true);
+
+  let a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+  const M = new Int32Array(16);
+  const rotl = (x, c) => (x << c) | (x >>> (32 - c));
+
+  for (let off = 0; off < withPad; off += 64) {
+    for (let i = 0; i < 16; i++) M[i] = dv.getInt32(off + i * 4, true);
+    let A = a0, B = b0, C = c0, D = d0;
+    for (let i = 0; i < 64; i++) {
+      let F, g;
+      if (i < 16) { F = (B & C) | (~B & D); g = i; }
+      else if (i < 32) { F = (D & B) | (~D & C); g = (5 * i + 1) & 15; }
+      else if (i < 48) { F = B ^ C ^ D; g = (3 * i + 5) & 15; }
+      else { F = C ^ (B | ~D); g = (7 * i) & 15; }
+      F = (F + A + T[i] + M[g]) | 0;
+      A = D; D = C; C = B;
+      B = (B + rotl(F, S[i])) | 0;
+    }
+    a0 = (a0 + A) | 0; b0 = (b0 + B) | 0; c0 = (c0 + C) | 0; d0 = (d0 + D) | 0;
+  }
+  const out = new Uint8Array(16), odv = new DataView(out.buffer);
+  odv.setInt32(0, a0, true); odv.setInt32(4, b0, true);
+  odv.setInt32(8, c0, true); odv.setInt32(12, d0, true);
+  return K.hex(out);
+};
+
+/* ---------- adler32 (zlib trailer) ------------------------------------ */
+
+K.adler32 = function (data) {
+  let a = 1, b = 0;
+  for (let i = 0; i < data.length; i++) {
+    a = (a + data[i]) % 65521;
+    b = (b + a) % 65521;
+  }
+  return ((b << 16) | a) >>> 0;
+};
+
+/* ---------- inflate ---------------------------------------------------
+   Needed to open the release archive: zip entries are deflated. Written out
+   rather than leaning on DecompressionStream so the archive reader works the
+   same on every browser and can be asserted against known vectors offline.  */
+
+K.inflateRaw = function (src, sizeHint) {
+  let pos = 0, bitBuf = 0, bitCnt = 0;
+  let out = new Uint8Array(Math.max(4096, (sizeHint | 0) || src.length * 4));
+  let len = 0;
+
+  const grow = n => {
+    if (len + n <= out.length) return;
+    let s = out.length;
+    while (s < len + n) s *= 2;
+    const nb = new Uint8Array(s); nb.set(out.subarray(0, len)); out = nb;
+  };
+  const bits = n => {
+    let v = bitBuf;
+    while (bitCnt < n) {
+      if (pos >= src.length) throw new Error("inflate: input ended mid-symbol");
+      v |= src[pos++] << bitCnt;
+      bitCnt += 8;
+    }
+    bitBuf = v >>> n; bitCnt -= n;
+    return v & ((1 << n) - 1);
+  };
+
+  const MAXBITS = 15;
+  const huff = lengths => {
+    const counts = new Int32Array(MAXBITS + 1);
+    for (let i = 0; i < lengths.length; i++) counts[lengths[i]]++;
+    counts[0] = 0;
+    const offs = new Int32Array(MAXBITS + 2);
+    for (let i = 1; i <= MAXBITS; i++) offs[i + 1] = offs[i] + counts[i];
+    const symbols = new Int32Array(lengths.length);
+    for (let s = 0; s < lengths.length; s++) if (lengths[s]) symbols[offs[lengths[s]]++] = s;
+    return { counts, symbols };
+  };
+  const decode = h => {
+    let code = 0, first = 0, index = 0;
+    for (let l = 1; l <= MAXBITS; l++) {
+      code |= bits(1);
+      const count = h.counts[l];
+      if (code - count < first) return h.symbols[index + (code - first)];
+      index += count; first = (first + count) << 1; code <<= 1;
+    }
+    throw new Error("inflate: no code matched");
+  };
+
+  const LBASE = [3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258];
+  const LEXT  = [0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0];
+  const DBASE = [1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577];
+  const DEXT  = [0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13];
+
+  let fixedL = null, fixedD = null;
+  const buildFixed = () => {
+    const l = new Uint8Array(288);
+    for (let i = 0; i < 144; i++) l[i] = 8;
+    for (let i = 144; i < 256; i++) l[i] = 9;
+    for (let i = 256; i < 280; i++) l[i] = 7;
+    for (let i = 280; i < 288; i++) l[i] = 8;
+    fixedL = huff(l);
+    fixedD = huff(new Uint8Array(30).fill(5));
+  };
+
+  const block = (lh, dh) => {
+    for (;;) {
+      const sym = decode(lh);
+      if (sym < 256) { grow(1); out[len++] = sym; continue; }
+      if (sym === 256) return;
+      const li = sym - 257;
+      if (li >= LBASE.length) throw new Error("inflate: bad length symbol");
+      const l = LBASE[li] + bits(LEXT[li]);
+      const ds = decode(dh);
+      if (ds >= DBASE.length) throw new Error("inflate: bad distance symbol");
+      const d = DBASE[ds] + bits(DEXT[ds]);
+      if (d > len) throw new Error("inflate: distance before start of output");
+      grow(l);
+      let from = len - d;
+      for (let i = 0; i < l; i++) out[len++] = out[from++];
+    }
+  };
+
+  const CLORDER = [16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15];
+
+  for (;;) {
+    const last = bits(1), type = bits(2);
+    if (type === 0) {
+      bitBuf = 0; bitCnt = 0;
+      if (pos + 4 > src.length) throw new Error("inflate: truncated stored block");
+      const l = src[pos] | (src[pos + 1] << 8);
+      const nl = src[pos + 2] | (src[pos + 3] << 8);
+      if ((l ^ 0xffff) !== nl) throw new Error("inflate: stored block length check failed");
+      pos += 4;
+      if (pos + l > src.length) throw new Error("inflate: truncated stored data");
+      grow(l);
+      out.set(src.subarray(pos, pos + l), len);
+      len += l; pos += l;
+    } else if (type === 1) {
+      if (!fixedL) buildFixed();
+      block(fixedL, fixedD);
+    } else if (type === 2) {
+      const hlit = bits(5) + 257, hdist = bits(5) + 1, hclen = bits(4) + 4;
+      const clens = new Uint8Array(19);
+      for (let i = 0; i < hclen; i++) clens[CLORDER[i]] = bits(3);
+      const ch = huff(clens);
+      const lens = new Uint8Array(hlit + hdist);
+      let i = 0;
+      while (i < lens.length) {
+        const s = decode(ch);
+        if (s < 16) lens[i++] = s;
+        else if (s === 16) {
+          if (i === 0) throw new Error("inflate: repeat with no previous length");
+          const prev = lens[i - 1], n = 3 + bits(2);
+          for (let j = 0; j < n; j++) lens[i++] = prev;
+        } else if (s === 17) { const n = 3 + bits(3); i += n; }
+        else { const n = 11 + bits(7); i += n; }
+      }
+      block(huff(lens.subarray(0, hlit)), huff(lens.subarray(hlit)));
+    } else {
+      throw new Error("inflate: reserved block type");
+    }
+    if (last) break;
+  }
+  return out.slice(0, len);
+};
+
+K.inflateZlib = function (src, sizeHint) {
+  if (src.length < 2) throw new Error("zlib: too short");
+  const cmf = src[0];
+  if ((cmf & 0x0f) !== 8) throw new Error("zlib: not deflate");
+  if (((cmf << 8) | src[1]) % 31 !== 0) throw new Error("zlib: header check failed");
+  if (src[1] & 0x20) throw new Error("zlib: preset dictionary not supported");
+  return K.inflateRaw(src.subarray(2), sizeHint);
+};
+
+/* ---------- deflate out ----------------------------------------------
+   Two paths. CompressionStream where the browser has it, which is the whole
+   point of compressing (fewer bytes over a 115200 wire). Where it does not,
+   a stored-block zlib stream: legal, verifiable, and no smaller than the
+   input. The UI says which one ran rather than quietly doing the slow thing. */
+
+K.deflateStored = function (data) {
+  const parts = [new Uint8Array([0x78, 0x01])];
+  const MAX = 65535;
+  if (data.length === 0) parts.push(new Uint8Array([0x01, 0x00, 0x00, 0xff, 0xff]));
+  for (let o = 0; o < data.length; o += MAX) {
+    const chunk = data.subarray(o, Math.min(o + MAX, data.length));
+    const last = o + MAX >= data.length ? 1 : 0;
+    const hdr = new Uint8Array(5);
+    hdr[0] = last;
+    hdr[1] = chunk.length & 0xff; hdr[2] = chunk.length >> 8;
+    hdr[3] = ~chunk.length & 0xff; hdr[4] = (~chunk.length >> 8) & 0xff;
+    parts.push(hdr, chunk);
+  }
+  const a = K.adler32(data);
+  parts.push(new Uint8Array([(a >>> 24) & 0xff, (a >>> 16) & 0xff, (a >>> 8) & 0xff, a & 0xff]));
+  return K.concat(...parts);
+};
+
+K.deflateMethod = () => (typeof CompressionStream === "function" ? "CompressionStream" : "stored blocks");
+
+K.deflateZlib = async function (data) {
+  if (typeof CompressionStream !== "function") return K.deflateStored(data);
+  const cs = new CompressionStream("deflate");
+  const w = cs.writable.getWriter();
+  w.write(data); w.close();
+  const chunks = []; const r = cs.readable.getReader();
+  for (;;) { const { value, done } = await r.read(); if (done) break; chunks.push(value); }
+  return K.concat(...chunks);
+};
+
+/* ---------- zip -------------------------------------------------------- */
+
+K.readZip = function (bytes) {
+  const EOCD = 0x06054b50;
+  let eo = -1;
+  for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 66000); i--) {
+    if (K.u32(bytes, i) === EOCD) { eo = i; break; }
+  }
+  if (eo < 0) throw new Error("not a zip archive (no end-of-central-directory record)");
+  const count = K.u16(bytes, eo + 10);
+  let p = K.u32(bytes, eo + 16);
+  const entries = [];
+  for (let i = 0; i < count; i++) {
+    if (K.u32(bytes, p) !== 0x02014b50) throw new Error("zip: central directory entry " + i + " is malformed");
+    const method = K.u16(bytes, p + 10);
+    const compSize = K.u32(bytes, p + 20);
+    const size = K.u32(bytes, p + 24);
+    const nameLen = K.u16(bytes, p + 28);
+    const extraLen = K.u16(bytes, p + 30);
+    const cmtLen = K.u16(bytes, p + 32);
+    const lo = K.u32(bytes, p + 42);
+    const name = K.ascii(bytes.subarray(p + 46, p + 46 + nameLen));
+    entries.push({ name, method, size, compSize, lo });
+    p += 46 + nameLen + extraLen + cmtLen;
+  }
+  return entries.map(e => {
+    if (K.u32(bytes, e.lo) !== 0x04034b50) throw new Error("zip: local header for " + e.name + " is malformed");
+    const nl = K.u16(bytes, e.lo + 26), xl = K.u16(bytes, e.lo + 28);
+    const start = e.lo + 30 + nl + xl;
+    const raw = bytes.subarray(start, start + e.compSize);
+    let data;
+    if (e.method === 0) data = raw.slice();
+    else if (e.method === 8) data = K.inflateRaw(raw, e.size);
+    else throw new Error("zip: " + e.name + " uses compression method " + e.method + ", which KEEL does not speak");
+    if (data.length !== e.size) throw new Error("zip: " + e.name + " inflated to " + data.length + " bytes, directory says " + e.size);
+    return { name: e.name, size: e.size, method: e.method, data };
+  });
+};
+/* ============================================================================
+   Section 2 — the wire format, the image format, and the plan.
+   Everything in this section is a pure function or a small state machine, so
+   the self-test can reach all of it with nothing plugged in.
+   ========================================================================== */
+
+/* ---------- SLIP ------------------------------------------------------- */
+
+K.SLIP_END = 0xc0;
+K.SLIP_ESC = 0xdb;
+
+K.slipEncode = function (payload) {
+  const out = [K.SLIP_END];
+  for (let i = 0; i < payload.length; i++) {
+    const b = payload[i];
+    if (b === 0xc0) out.push(0xdb, 0xdc);
+    else if (b === 0xdb) out.push(0xdb, 0xdd);
+    else out.push(b);
+  }
+  out.push(K.SLIP_END);
+  return Uint8Array.from(out);
+};
+
+/* Bytes outside frames are not an error — the ROM prints plain text at a
+   different baud on reset, and a half-frame left over from a previous run is
+   normal. They are handed to onStray so station 01 can show them. */
+K.SlipDecoder = class {
+  constructor(onFrame, onStray) {
+    this.onFrame = onFrame;
+    this.onStray = onStray || (() => {});
+    this.buf = [];
+    this.inFrame = false;
+    this.esc = false;
+    this.stray = [];
+  }
+  push(bytes) {
+    for (let i = 0; i < bytes.length; i++) {
+      const b = bytes[i];
+      if (!this.inFrame) {
+        if (b === K.SLIP_END) {
+          if (this.stray.length) { this.onStray(Uint8Array.from(this.stray)); this.stray = []; }
+          this.inFrame = true; this.buf = []; this.esc = false;
+        } else this.stray.push(b);
+        continue;
+      }
+      if (this.esc) {
+        this.buf.push(b === 0xdc ? 0xc0 : b === 0xdd ? 0xdb : b);
+        this.esc = false;
+      } else if (b === K.SLIP_ESC) this.esc = true;
+      else if (b === K.SLIP_END) {
+        // An empty frame is just two delimiters back to back; ignore it.
+        if (this.buf.length) this.onFrame(Uint8Array.from(this.buf));
+        this.buf = []; this.inFrame = false;
+      } else this.buf.push(b);
+    }
+  }
+};
+
+/* ---------- commands --------------------------------------------------- */
+
+K.CMD = {
+  FLASH_BEGIN: 0x02, FLASH_DATA: 0x03, FLASH_END: 0x04,
+  MEM_BEGIN: 0x05, MEM_END: 0x06, MEM_DATA: 0x07,
+  SYNC: 0x08, WRITE_REG: 0x09, READ_REG: 0x0a,
+  SPI_SET_PARAMS: 0x0b, SPI_ATTACH: 0x0d, CHANGE_BAUDRATE: 0x0f,
+  FLASH_DEFL_BEGIN: 0x10, FLASH_DEFL_DATA: 0x11, FLASH_DEFL_END: 0x12,
+  SPI_FLASH_MD5: 0x13,
+};
+K.CMDNAME = Object.fromEntries(Object.entries(K.CMD).map(([k, v]) => [v, k]));
+
+K.SYNC_PAYLOAD = K.concat(Uint8Array.from([0x07, 0x07, 0x12, 0x20]), new Uint8Array(32).fill(0x55));
+
+/* Only the three data-carrying commands are checksummed, and the seed is
+   0xEF. Everything else sends zero and the ROM does not look at it. */
+K.checksum = function (data) {
+  let c = 0xef;
+  for (let i = 0; i < data.length; i++) c ^= data[i];
+  return c >>> 0;
+};
+
+K.buildCommand = function (cmd, data = new Uint8Array(0), chk = 0) {
+  const head = new Uint8Array(8);
+  head[0] = 0x00; head[1] = cmd;
+  head[2] = data.length & 0xff; head[3] = (data.length >> 8) & 0xff;
+  new DataView(head.buffer).setUint32(4, chk >>> 0, true);
+  return K.concat(head, data);
+};
+
+/* statusLen is 2 on the ESP32 ROM and 4 on every chip after it. Reading it
+   wrong makes a failure parse as a success, which is the one mistake a
+   flasher cannot survive, so the parser refuses short frames outright. */
+K.parseResponse = function (frame, statusLen) {
+  if (frame.length < 8 + statusLen) throw new Error("response frame is " + frame.length + " bytes, too short to carry a status");
+  if (frame[0] !== 0x01) throw new Error("response direction byte is 0x" + frame[0].toString(16) + ", expected 0x01");
+  const cmd = frame[1];
+  const size = K.u16(frame, 2);
+  const value = K.u32(frame, 4);
+  const body = frame.subarray(8);
+  const status = body.subarray(body.length - statusLen);
+  const payload = body.subarray(0, body.length - statusLen);
+  return {
+    cmd, size, value, payload,
+    status: Array.from(status),
+    ok: status[0] === 0,
+    err: status[0] === 0 ? 0 : status[1],
+  };
+};
+
+K.ROM_ERRORS = {
+  0x05: "received message is invalid",
+  0x06: "failed to act on received message",
+  0x07: "invalid CRC in message",
+  0x08: "flash write error",
+  0x09: "flash read error",
+  0x0a: "flash read length error",
+  0x0b: "deflate error",
+};
+
+/* ---------- chips ------------------------------------------------------ */
+
+K.CHIP_MAGIC_REG = 0x40001000;
+K.CHIPS = {
+  0x00f01d83: { name: "ESP32", statusLen: 2, imageChipId: 0, supported: true },
+  0x000007c6: { name: "ESP32-S2", statusLen: 4, imageChipId: 2, supported: false },
+  0x09: { name: "ESP32-S3", statusLen: 4, imageChipId: 9, supported: false },
+  0x6921506f: { name: "ESP32-C3", statusLen: 4, imageChipId: 5, supported: false },
+  0x1b31506f: { name: "ESP32-C3", statusLen: 4, imageChipId: 5, supported: false },
+  0x4881606f: { name: "ESP32-C3", statusLen: 4, imageChipId: 5, supported: false },
+  0x4361606f: { name: "ESP32-C3", statusLen: 4, imageChipId: 5, supported: false },
+  0x2ce0806f: { name: "ESP32-C6", statusLen: 4, imageChipId: 13, supported: false },
+  0xd7b73e80: { name: "ESP32-H2", statusLen: 4, imageChipId: 16, supported: false },
+};
+K.IMAGE_CHIP_NAMES = { 0: "ESP32", 2: "ESP32-S2", 5: "ESP32-C3", 9: "ESP32-S3", 12: "ESP32-C2", 13: "ESP32-C6", 16: "ESP32-H2" };
+K.EFUSE_MAC_REG = 0x3ff5a000 + 0x04;
+
+/* ---------- image header ---------------------------------------------- */
+
+K.FLASH_MODES = { 0: "QIO", 1: "QOUT", 2: "DIO", 3: "DOUT" };
+K.FLASH_SIZES = { 0: "1 MB", 1: "2 MB", 2: "4 MB", 3: "8 MB", 4: "16 MB", 5: "32 MB", 6: "64 MB", 7: "128 MB" };
+K.FLASH_FREQS = { 0: "40 MHz", 1: "26 MHz", 2: "20 MHz", 0xf: "80 MHz" };
+
+K.parseImageHeader = function (data) {
+  if (data.length < 24) return { valid: false, why: "shorter than an image header" };
+  if (data[0] !== 0xe9) return { valid: false, why: "first byte is 0x" + data[0].toString(16) + ", not the 0xE9 image magic" };
+  const sizeFreq = data[3];
+  const h = {
+    valid: true,
+    segments: data[1],
+    modeByte: data[2],
+    mode: K.FLASH_MODES[data[2]] ?? ("unknown (" + data[2] + ")"),
+    sizeCode: sizeFreq >> 4,
+    size: K.FLASH_SIZES[sizeFreq >> 4] ?? ("unknown (" + (sizeFreq >> 4) + ")"),
+    freq: K.FLASH_FREQS[sizeFreq & 0x0f] ?? ("unknown (" + (sizeFreq & 0x0f) + ")"),
+    entry: K.u32(data, 4),
+    chipId: K.u16(data, 12),
+  };
+  h.chip = K.IMAGE_CHIP_NAMES[h.chipId] ?? ("chip id " + h.chipId);
+  return h;
+};
+
+/* ---------- the install script ----------------------------------------
+   The archive knows where its own pieces go. KEEL reads the script the
+   release ships rather than carrying a table of offsets that rots quietly
+   the next time upstream repartitions.                                     */
+
+K.OPTS_WITH_VALUE = new Set([
+  "--baud", "-b", "--port", "-p", "--chip", "-c", "--before", "--after",
+  "--flash_mode", "--flash_freq", "--flash_size", "-fm", "-ff", "-fs", "--trace",
+]);
+
+K.parseInstallScript = function (text, filename) {
+  const lines = String(text).split(/\r?\n/);
+  const writes = [];
+  const notes = [];
+  let erase = false;
+  lines.forEach((line, n) => {
+    const bare = line.replace(/^\s*(::|#|rem\s).*$/i, "").trim();
+    if (!bare) return;
+    if (/\berase_flash\b/.test(bare)) { erase = true; notes.push({ n: n + 1, line: line.trim(), what: "whole-chip erase (KEEL cannot do this on the ROM loader)" }); }
+    const wi = bare.search(/\bwrite_flash\b/);
+    if (wi < 0) return;
+    const toks = bare.slice(wi + "write_flash".length).trim().split(/\s+/).filter(Boolean);
+    let i = 0, pending = null;
+    while (i < toks.length) {
+      let t = toks[i];
+      if (t.startsWith("-")) {
+        if (t.includes("=")) { i++; continue; }
+        if (K.OPTS_WITH_VALUE.has(t)) { i += 2; continue; }
+        i++; continue;
+      }
+      t = t.replace(/^["']|["']$/g, "");
+      if (/^0x[0-9a-f]+$/i.test(t) || /^\d+$/.test(t)) {
+        pending = parseInt(t, t.startsWith("0x") || t.startsWith("0X") ? 16 : 10);
+      } else if (pending !== null) {
+        writes.push({
+          offset: pending,
+          token: t,
+          unresolved: /[$%{}*]/.test(t),
+          line: line.trim(),
+          n: n + 1,
+        });
+        pending = null;
+      }
+      i++;
+    }
+  });
+  return { source: filename || "(unnamed)", erase, writes, notes, lines: lines.length };
+};
+
+/* Used only when the archive carries no script. Shown in the interface as an
+   assumption, in a different colour, never as a fact. */
+K.FALLBACK_LAYOUT = [
+  { offset: 0x000000, match: /^firmware-.*\.bin$/i, why: "assumed: combined bootloader + partitions + application" },
+  { offset: 0x260000, match: /^bleota\.bin$/i, why: "assumed: BLE OTA helper" },
+  { offset: 0x300000, match: /^littlefs-.*\.bin$/i, why: "assumed: filesystem" },
+];
+
+/* ---------- the plan --------------------------------------------------- */
+
+K.SECTOR = 4096;
+K.isFilesystem = name => /littlefs|spiffs|filesystem/i.test(name);
+
+K.buildPlan = function (opts) {
+  const entries = opts.entries || [];
+  const writes = opts.writes || [];
+  const flashSize = opts.flashSize || 4 * 1024 * 1024;
+  const skipFs = !!opts.skipFs;
+  const byName = new Map(entries.map(e => [e.name.split("/").pop(), e]));
+  const regions = [];
+  const problems = [];
+
+  for (const w of writes) {
+    const base = String(w.token).split("/").pop();
+    let entry = byName.get(base) || null;
+    if (!entry && w.bound) entry = byName.get(String(w.bound).split("/").pop()) || null;
+    if (!entry && !w.unresolved) {
+      // Tolerate version drift between script and filenames: match on shape.
+      const stem = base.replace(/-?\d[\d.]*\w*\.bin$/i, "");
+      const cands = entries.filter(e => e.name.endsWith(".bin") && e.name.split("/").pop().startsWith(stem));
+      if (cands.length === 1) entry = cands[0];
+    }
+    if (!entry) {
+      problems.push({ level: w.unresolved ? "bind" : "stop", text: "no file in the archive for " + w.token + " at " + K.addr(w.offset), token: w.token, offset: w.offset });
+      continue;
+    }
+    const skipped = skipFs && K.isFilesystem(entry.name);
+    regions.push({
+      offset: w.offset,
+      name: entry.name,
+      size: entry.data.length,
+      data: entry.data,
+      md5: K.md5(entry.data),
+      header: K.parseImageHeader(entry.data),
+      skipped,
+      state: skipped ? "skipped" : "planned",
+      sent: 0,
+      source: w.line || null,
+      assumed: !!w.assumed,
+    });
+  }
+
+  regions.sort((a, b) => a.offset - b.offset);
+
+  for (const r of regions) {
+    if (r.offset % K.SECTOR !== 0)
+      problems.push({ level: "stop", text: K.addr(r.offset) + " is not on a 4096-byte sector boundary; the bootloader erases whole sectors and will not take it" });
+    if (r.offset + r.size > flashSize)
+      problems.push({ level: "stop", text: r.name + " runs to " + K.addr(r.offset + r.size) + ", past the end of a " + K.bytesHuman(flashSize) + " chip" });
+  }
+  const live = regions.filter(r => !r.skipped);
+  for (let i = 1; i < live.length; i++) {
+    const prev = live[i - 1], cur = live[i];
+    if (prev.offset + prev.size > cur.offset)
+      problems.push({ level: "stop", text: prev.name + " overlaps " + cur.name + " at " + K.addr(cur.offset) });
+  }
+
+  return {
+    regions,
+    problems,
+    flashSize,
+    totalBytes: live.reduce((n, r) => n + r.size, 0),
+    canRun: regions.length > 0 && !problems.some(p => p.level === "stop"),
+  };
+};
+
+/* ---------- THE MAP ---------------------------------------------------
+   Pure geometry so the drawing can be asserted without a DOM. Small regions
+   get a floor height, because a 4 KB band on a 4 MB chip is invisible and an
+   invisible band is a band you cannot see fail.                            */
+
+K.MAP_H = 900;
+K.MAP_MIN_BAND = 9;
+
+K.mapGeometry = function (regions, flashSize, height) {
+  const H = height || K.MAP_H;
+  const scale = a => Math.round((a / flashSize) * H);
+  return regions.map(r => {
+    const y = scale(r.offset);
+    const h = Math.max(K.MAP_MIN_BAND, scale(r.offset + r.size) - y);
+    return {
+      name: r.name,
+      offset: r.offset,
+      size: r.size,
+      state: r.state,
+      y: Math.min(y, H - h),
+      h,
+      fill: r.state === "writing" || r.state === "erasing" ? Math.min(1, r.sent / Math.max(1, r.size)) : (r.state === "verified" ? 1 : 0),
+      md5: r.md5,
+      chipMd5: r.chipMd5 || null,
+    };
+  });
+};
+
+K.STATE_COLOR = {
+  planned: "var(--faint)", skipped: "var(--faint)",
+  erasing: "var(--ember)", writing: "var(--ember)", verifying: "var(--ember)",
+  verified: "var(--verd)", failed: "var(--red)",
+};
+/* ============================================================================
+   Section 3 — talking to the thing. One driver, two wires: a real serial port
+   and a synthetic bootloader that answers the same commands.
+   ========================================================================== */
+
+K.USB_BRIDGES = {
+  "10c4:ea60": "Silicon Labs CP2102 / CP2102N",
+  "10c4:ea70": "Silicon Labs CP2105",
+  "1a86:7523": "WCH CH340",
+  "1a86:55d4": "WCH CH9102",
+  "0403:6001": "FTDI FT232R",
+  "303a:1001": "Espressif native USB",
+};
+
+/* ---------- real wire -------------------------------------------------- */
+
+K.SerialTransport = class {
+  constructor() { this.onData = () => {}; this.port = null; this.baud = 115200; }
+  static available() { return typeof navigator !== "undefined" && !!navigator.serial; }
+  async open(baud) {
+    this.port = await navigator.serial.requestPort();
+    this.baud = baud;
+    await this.port.open({ baudRate: baud, bufferSize: 16384 });
+    this._pump();
+  }
+  describe() {
+    if (!this.port || !this.port.getInfo) return "serial port";
+    const i = this.port.getInfo() || {};
+    if (i.usbVendorId == null) return "serial port";
+    const key = i.usbVendorId.toString(16).padStart(4, "0") + ":" + (i.usbProductId || 0).toString(16).padStart(4, "0");
+    return (K.USB_BRIDGES[key] || "USB serial bridge") + " (" + key + ")";
+  }
+  async _pump() {
+    this.stopped = false;
+    while (this.port && this.port.readable && !this.stopped) {
+      this.reader = this.port.readable.getReader();
+      try {
+        for (;;) {
+          const { value, done } = await this.reader.read();
+          if (done) break;
+          if (value && value.length) this.onData(value);
+        }
+      } catch (e) { /* a closed port surfaces here; the caller already knows */ }
+      finally { try { this.reader.releaseLock(); } catch (e) {} }
+    }
+  }
+  async write(bytes) {
+    const w = this.port.writable.getWriter();
+    try { await w.write(bytes); } finally { w.releaseLock(); }
+  }
+  async setSignals(sig) { await this.port.setSignals(sig); }
+  async setBaud(baud) {
+    this.stopped = true;
+    try { await this.reader.cancel(); } catch (e) {}
+    await K.sleep(30);
+    await this.port.close();
+    await this.port.open({ baudRate: baud, bufferSize: 16384 });
+    this.baud = baud;
+    this._pump();
+    await K.sleep(60);
+  }
+  async close() {
+    this.stopped = true;
+    try { await this.reader.cancel(); } catch (e) {}
+    try { await this.port.close(); } catch (e) {}
+    this.port = null;
+  }
+};
+
+/* ---------- synthetic bootloader --------------------------------------- */
+
+K.SimBootloader = class {
+  constructor(opts = {}) {
+    this.size = opts.size || 4 * 1024 * 1024;
+    this.flash = new Uint8Array(this.size).fill(0xff);
+    this.faults = opts.faults || {};
+    this.emit = opts.emit || (() => {});
+    this.reset();
+  }
+  reset() {
+    this.inBoot = false;
+    this.dead = false;
+    this.blocks = 0;
+    this.cur = null;
+    this.comp = [];
+    this.dec = new K.SlipDecoder(f => this._handle(f));
+  }
+  enterBootloader() { this.inBoot = true; this.blocks = 0; this.dead = false; this.emit(K.fromAscii("waiting for download\r\n")); }
+  feed(bytes) { if (!this.dead) this.dec.push(bytes); }
+
+  _send(frame) {
+    if (this.faults.garbage) this.emit(K.fromAscii("ets Jun  8 2016 00:22:57\r\n"));
+    this.emit(K.slipEncode(frame));
+  }
+  _reply(cmd, value = 0, payload = new Uint8Array(0), err = 0) {
+    const head = new Uint8Array(8);
+    head[0] = 0x01; head[1] = cmd;
+    const size = payload.length + 2;
+    head[2] = size & 0xff; head[3] = (size >> 8) & 0xff;
+    new DataView(head.buffer).setUint32(4, value >>> 0, true);
+    this._send(K.concat(head, payload, Uint8Array.from([err ? 1 : 0, err])));
+  }
+
+  _handle(frame) {
+    if (!this.inBoot) return;
+    const cmd = frame[1];
+    const data = frame.subarray(8);
+    const C = K.CMD;
+
+    if (cmd === C.SYNC) {
+      if (this.faults.nosync) return;
+      for (let i = 0; i < 8; i++) this._reply(C.SYNC);
+      return;
+    }
+    if (cmd === C.READ_REG) {
+      const addr = K.u32(data, 0);
+      let v = 0;
+      if (addr === K.CHIP_MAGIC_REG) v = 0x00f01d83;
+      else if (addr === K.EFUSE_MAC_REG) v = 0x5a2b0c11;
+      else if (addr === K.EFUSE_MAC_REG + 4) v = 0x0000a4cf;
+      this._reply(cmd, v);
+      return;
+    }
+    if (cmd === C.SPI_ATTACH || cmd === C.SPI_SET_PARAMS || cmd === C.CHANGE_BAUDRATE) { this._reply(cmd); return; }
+
+    if (cmd === C.FLASH_BEGIN || cmd === C.FLASH_DEFL_BEGIN) {
+      const declared = K.u32(data, 0), blocks = K.u32(data, 4), bs = K.u32(data, 8), off = K.u32(data, 12);
+      this.cur = { off, declared, blocks, bs, defl: cmd === C.FLASH_DEFL_BEGIN, written: 0 };
+      this.comp = [];
+      const end = Math.min(this.size, off + declared);
+      this.flash.fill(0xff, off, end);
+      this._reply(cmd);
+      return;
+    }
+    if (cmd === C.FLASH_DATA || cmd === C.FLASH_DEFL_DATA) {
+      this.blocks++;
+      if (this.faults.stall && this.blocks > 2) return;
+      if (this.faults.drop && this.blocks > 3) { this.dead = true; return; }
+      if (this.faults.badstatus && this.blocks === 3) { this._reply(cmd, 0, new Uint8Array(0), 0x08); return; }
+      const len = K.u32(data, 0), seq = K.u32(data, 4);
+      const body = data.subarray(16, 16 + len);
+      if (this.cur && this.cur.defl) this.comp.push(body.slice());
+      else if (this.cur) {
+        const at = this.cur.off + seq * this.cur.bs;
+        this.flash.set(body.subarray(0, Math.min(body.length, this.size - at)), at);
+      }
+      this._reply(cmd);
+      return;
+    }
+    if (cmd === C.FLASH_END || cmd === C.FLASH_DEFL_END) {
+      if (this.cur && this.cur.defl && this.comp.length) {
+        try {
+          const raw = K.inflateZlib(K.concat(...this.comp), this.cur.declared);
+          this.flash.set(raw.subarray(0, Math.min(raw.length, this.size - this.cur.off)), this.cur.off);
+        } catch (e) { this._reply(cmd, 0, new Uint8Array(0), 0x0b); return; }
+      }
+      this.cur = null; this.comp = [];
+      this._reply(cmd);
+      return;
+    }
+    if (cmd === C.SPI_FLASH_MD5) {
+      const addr = K.u32(data, 0), size = K.u32(data, 4);
+      let d = K.md5(this.flash.subarray(addr, addr + size));
+      if (this.faults.md5bad) d = d.slice(0, 30) + (d.slice(30) === "00" ? "ff" : "00");
+      this._reply(cmd, 0, K.fromAscii(d));
+      return;
+    }
+    this._reply(cmd, 0, new Uint8Array(0), 0x05);
+  }
+};
+
+K.SimTransport = class {
+  constructor(sim) {
+    this.sim = sim;
+    this.onData = () => {};
+    this.dtr = false; this.rts = false;
+    sim.emit = b => { const c = b.slice(); setTimeout(() => this.onData(c), 0); };
+  }
+  describe() { return "simulated ESP32 ROM bootloader"; }
+  async open() {}
+  async write(b) { this.sim.feed(b); }
+  async setSignals(sig) {
+    const prevRts = this.rts;
+    if ("dataTerminalReady" in sig) this.dtr = !!sig.dataTerminalReady;
+    if ("requestToSend" in sig) this.rts = !!sig.requestToSend;
+    // EN released (RTS false) while IO0 held low (DTR true) is the download latch.
+    if (prevRts && !this.rts) { if (this.dtr) this.sim.enterBootloader(); else this.sim.reset(); }
+  }
+  async setBaud() {}
+  async close() {}
+};
+
+/* ---------- the driver -------------------------------------------------- */
+
+K.Timeout = class extends Error {};
+
+K.Loader = class {
+  constructor(transport, opts = {}) {
+    this.t = transport;
+    this.log = opts.log || (() => {});
+    this.statusLen = 2;          // ESP32 ROM. Four on every chip after it.
+    this.blockSize = 1024;       // ROM loader. The stub uses 16384; we have no stub.
+    this.dataTimeout = 6000;
+    this.frames = [];
+    this.waiter = null;
+    this.retries = 0;
+    this.abort = false;
+    this.dec = new K.SlipDecoder(
+      f => { if (this.waiter) { const w = this.waiter; this.waiter = null; w.resolve(f); } else this.frames.push(f); },
+      s => { const txt = K.ascii(s).replace(/[^\x20-\x7e\r\n]/g, "·").trim(); if (txt) this.log("note", "off-frame: " + txt); }
+    );
+    transport.onData = b => this.dec.push(b);
+  }
+
+  _readFrame(timeout) {
+    if (this.frames.length) return Promise.resolve(this.frames.shift());
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { this.waiter = null; reject(new K.Timeout("no answer in " + timeout + " ms")); }, timeout);
+      this.waiter = { resolve: f => { clearTimeout(timer); resolve(f); } };
+    });
+  }
+
+  async command(cmd, data = new Uint8Array(0), chk = 0, timeout = 3000) {
+    if (this.abort) throw new Error("stopped");
+    const pkt = K.buildCommand(cmd, data, chk);
+    this.log("tx", (K.CMDNAME[cmd] || "0x" + cmd.toString(16)) + "  " + data.length + " B" + (chk ? "  chk 0x" + chk.toString(16) : ""));
+    await this.t.write(K.slipEncode(pkt));
+    const deadline = Date.now() + timeout;
+    for (;;) {
+      const left = deadline - Date.now();
+      if (left <= 0) throw new K.Timeout("no answer to " + (K.CMDNAME[cmd] || cmd) + " in " + timeout + " ms");
+      const frame = await this._readFrame(left);
+      let r;
+      try { r = K.parseResponse(frame, this.statusLen); }
+      catch (e) { this.log("err", "unparseable frame (" + frame.length + " B): " + e.message); throw e; }
+      if (r.cmd !== cmd) { this.log("note", "ignored a response to " + (K.CMDNAME[r.cmd] || r.cmd)); continue; }
+      if (!r.ok) {
+        const why = K.ROM_ERRORS[r.err] || ("error 0x" + r.err.toString(16));
+        this.log("err", (K.CMDNAME[cmd] || cmd) + " refused: " + why);
+        const e = new Error((K.CMDNAME[cmd] || cmd) + " refused by the bootloader: " + why);
+        e.romError = r.err;
+        throw e;
+      }
+      this.log("rx", (K.CMDNAME[cmd] || cmd) + " ok" + (r.payload.length ? "  " + r.payload.length + " B" : "") + (r.value ? "  value 0x" + r.value.toString(16) : ""));
+      return r;
+    }
+  }
+
+  /* The reset dance, one labelled step at a time, because on a clone board
+     exactly one of these is the step that does not happen. */
+  async enterBootloader(onStep) {
+    const step = (i, state, text) => onStep && onStep(i, state, text);
+    const seq = [
+      ["DTR released — IO0 high", async () => { await this.t.setSignals({ dataTerminalReady: false, requestToSend: false }); }],
+      ["RTS asserted — EN low, chip held in reset", async () => { await this.t.setSignals({ requestToSend: true }); await K.sleep(100); }],
+      ["DTR asserted — IO0 pulled low", async () => { await this.t.setSignals({ dataTerminalReady: true }); }],
+      ["RTS released — EN high, chip starts with IO0 low", async () => { await this.t.setSignals({ requestToSend: false }); await K.sleep(50); }],
+      ["DTR released — IO0 free again", async () => { await this.t.setSignals({ dataTerminalReady: false }); await K.sleep(50); }],
+    ];
+    for (let i = 0; i < seq.length; i++) {
+      step(i, "now", seq[i][0]);
+      await seq[i][1]();
+      step(i, "done", seq[i][0]);
+    }
+    step(5, "now", "SYNC");
+    this.frames = [];
+    let last = null;
+    for (let attempt = 1; attempt <= 7; attempt++) {
+      try {
+        await this.command(K.CMD.SYNC, K.SYNC_PAYLOAD, 0, 250);
+        await K.sleep(60);
+        this.frames = [];                   // the ROM answers a sync eight times
+        step(5, "done", "SYNC — answered on attempt " + attempt);
+        return true;
+      } catch (e) {
+        last = e;
+        this.retries++;
+        this.log("note", "sync attempt " + attempt + " went unanswered");
+        await K.sleep(50);
+      }
+    }
+    step(5, "fail", "SYNC — seven attempts, no answer");
+    throw new Error("the board never answered a sync: " + (last ? last.message : "unknown"));
+  }
+
+  async readReg(addr) {
+    const r = await this.command(K.CMD.READ_REG, K.packU32(addr), 0, 1500);
+    return r.value >>> 0;
+  }
+
+  async identify() {
+    const magic = await this.readReg(K.CHIP_MAGIC_REG);
+    const chip = K.CHIPS[magic] || { name: "unknown", statusLen: 2, supported: false, imageChipId: null };
+    this.chip = chip; this.magic = magic;
+    this.statusLen = chip.statusLen;
+    let mac = null;
+    try {
+      const m0 = await this.readReg(K.EFUSE_MAC_REG);
+      const m1 = await this.readReg(K.EFUSE_MAC_REG + 4);
+      const b = new Uint8Array(6);
+      b[0] = (m1 >> 8) & 0xff; b[1] = m1 & 0xff;
+      b[2] = (m0 >>> 24) & 0xff; b[3] = (m0 >>> 16) & 0xff; b[4] = (m0 >>> 8) & 0xff; b[5] = m0 & 0xff;
+      mac = Array.from(b, x => x.toString(16).padStart(2, "0")).join(":");
+    } catch (e) { this.log("note", "eFuse MAC not read: " + e.message); }
+    return { magic, chip, mac };
+  }
+
+  async prepareFlash(flashSize) {
+    await this.command(K.CMD.SPI_ATTACH, K.packU32(0, 0), 0, 3000);
+    await this.command(K.CMD.SPI_SET_PARAMS, K.packU32(0, flashSize, 64 * 1024, 4 * 1024, 256, 0xffff), 0, 3000);
+  }
+
+  async changeBaud(next) {
+    if (!this.t.setBaud) return false;
+    await this.command(K.CMD.CHANGE_BAUDRATE, K.packU32(next, 0), 0, 3000);
+    await this.t.setBaud(next);
+    this.frames = [];
+    this.log("note", "wire moved to " + next + " baud");
+    return true;
+  }
+
+  eraseTimeout(size) { return Math.max(6000, 12000 + (size / 65536) * 900); }
+
+  async writeRegion(region, opts = {}) {
+    const data = region.data;
+    const compress = opts.compress !== false;
+    const onProgress = opts.onProgress || (() => {});
+    const bs = this.blockSize;
+    const eraseBlocks = Math.ceil(data.length / bs);
+
+    let payload = data, numBlocks;
+    if (compress) {
+      payload = await K.deflateZlib(data);
+      numBlocks = Math.ceil(payload.length / bs);
+      this.log("note", region.name + ": " + K.bytesHuman(data.length) + " compressed to " + K.bytesHuman(payload.length) + " via " + K.deflateMethod());
+      // On the ROM loader the size field of a compressed begin is the erase
+      // size, rounded up to whole write blocks — not the compressed length.
+      await this.command(K.CMD.FLASH_DEFL_BEGIN, K.packU32(eraseBlocks * bs, numBlocks, bs, region.offset), 0, this.eraseTimeout(data.length));
+    } else {
+      numBlocks = eraseBlocks;
+      await this.command(K.CMD.FLASH_BEGIN, K.packU32(data.length, numBlocks, bs, region.offset), 0, this.eraseTimeout(data.length));
+    }
+
+    for (let seq = 0; seq < numBlocks; seq++) {
+      if (this.abort) throw new Error("stopped by the operator");
+      let chunk = payload.subarray(seq * bs, Math.min((seq + 1) * bs, payload.length));
+      if (!compress && chunk.length < bs) {
+        const padded = new Uint8Array(bs).fill(0xff);
+        padded.set(chunk); chunk = padded;
+      }
+      const head = K.packU32(chunk.length, seq, 0, 0);
+      await this.command(
+        compress ? K.CMD.FLASH_DEFL_DATA : K.CMD.FLASH_DATA,
+        K.concat(head, chunk), K.checksum(chunk), this.dataTimeout
+      );
+      onProgress(Math.min(data.length, Math.round(((seq + 1) / numBlocks) * data.length)));
+    }
+    // 1 means "stay in the bootloader" — there is more to write after this.
+    await this.command(compress ? K.CMD.FLASH_DEFL_END : K.CMD.FLASH_END, K.packU32(1), 0, 3000);
+    onProgress(data.length);
+  }
+
+  async digest(offset, size) {
+    const r = await this.command(K.CMD.SPI_FLASH_MD5, K.packU32(offset, size, 0, 0), 0, Math.max(8000, 8000 + size / 1024));
+    if (r.payload.length >= 32) return K.ascii(r.payload.subarray(0, 32)).toLowerCase();
+    if (r.payload.length === 16) return K.hex(r.payload);
+    throw new Error("the bootloader returned " + r.payload.length + " bytes where a digest was expected");
+  }
+
+  async runApplication() {
+    try { await this.t.setSignals({ dataTerminalReady: false, requestToSend: true }); await K.sleep(100); await this.t.setSignals({ requestToSend: false }); }
+    catch (e) { this.log("note", "could not toggle reset: " + e.message); }
+  }
+};
+/* ============================================================================
+   Section 4 — the interface. Nothing below decides anything; it shows what
+   sections 1 to 3 worked out, and collects the two approvals that matter.
+   ========================================================================== */
+
+K.DIY_PINS = [
+  { sig: "LORA_SCK", pin: 5, note: "SPI clock" },
+  { sig: "LORA_MISO", pin: 19, note: "SPI in" },
+  { sig: "LORA_MOSI", pin: 27, note: "SPI out" },
+  { sig: "LORA_CS", pin: 18, note: "chip select (NSS)" },
+  { sig: "LORA_RESET", pin: 23, note: "reset, both radio families" },
+  { sig: "LORA_DIO0", pin: 26, note: "IRQ on SX127x; no connect on SX126x" },
+  { sig: "LORA_DIO1", pin: 33, note: "IRQ on SX126x" },
+  { sig: "LORA_DIO2", pin: 32, note: "BUSY on SX126x" },
+  { sig: "RF95_RXEN", pin: 14, note: "RX enable, SX127x front end" },
+  { sig: "RF95_TXEN / SX126X_TXEN", pin: 13, note: "TX enable" },
+  { sig: "I2C_SDA", pin: 21, note: "OLED, if fitted" },
+  { sig: "I2C_SCL", pin: 22, note: "OLED, if fitted" },
+  { sig: "BUTTON_PIN", pin: 39, note: "input only" },
+  { sig: "BATTERY_PIN", pin: 35, note: "input only; divider 470k / 680k, multiplier 1.85" },
+  { sig: "LED_POWER", pin: 2, note: "status LED" },
+  { sig: "EXT_PWR_DETECT", pin: 4, note: "external supply sense" },
+  { sig: "GPS_RX_PIN", pin: 12, note: "MTDI strapping pin — see the warning" },
+  { sig: "GPS_TX_PIN", pin: 15, note: "MTDO strapping pin" },
+];
+
+K.PREFLIGHT = [
+  "An antenna is on the LoRa module. A bare module keyed even once can take the PA with it.",
+  "The module's band matches the region I intend to set: a 902–928 MHz part for US_915.",
+  "Nothing is holding GPIO12 high at boot. On a 3.3 V-flash WROOM-32 that stops the chip booting, and diy-v1 puts GPS_RX on it.",
+  "The radio's 3.3 V comes from the board regulator or a proper shield, not from a cell straight onto the rail.",
+  "SPI is wired 5 / 27 / 19 / 18, not the VSPI numbers I would have used from memory.",
+  "The board is on USB power alone for this, with no battery in circuit.",
+];
+
+K.FAULTS = [
+  ["nosync", "Board never answers a sync"],
+  ["garbage", "ROM boot text between frames"],
+  ["badstatus", "Bootloader refuses the third data block"],
+  ["stall", "Answers stop mid-write"],
+  ["drop", "Wire dies mid-write"],
+  ["md5bad", "Chip reports a digest that does not match"],
+];
+
+(function () {
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+  const S = {
+    transport: null, loader: null, chip: null, mac: null, connected: false,
+    entries: [], script: null, scriptSource: null, plan: null, approved: false,
+    run: null, faults: {}, monitoring: false, bootText: "",
+  };
+  K._state = S;
+
+  /* ---------- chrome ---------------------------------------------------- */
+
+  function showStation(name) {
+    document.querySelectorAll("section.station").forEach(s => s.classList.toggle("on", s.id === "st-" + name));
+    document.querySelectorAll("#tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.st === name)));
+    window.scrollTo({ top: 0, behavior: "instant" in window ? "instant" : "auto" });
+  }
+  document.querySelectorAll("#tabs button").forEach(b => b.addEventListener("click", () => showStation(b.dataset.st)));
+  showStation("wire");
+  $("verline").textContent = "v" + K.VERSION;
+  $("foot-ver").textContent = "v" + K.VERSION + " · " + K.BUILT;
+
+  function lane(id, kind, text) {
+    const el = $(id);
+    const d = document.createElement("div");
+    d.className = kind;
+    d.textContent = (kind === "tx" ? "→ " : kind === "rx" ? "← " : kind === "err" ? "✕ " : "· ") + text;
+    el.appendChild(d);
+    while (el.children.length > 400) el.removeChild(el.firstChild);
+    el.scrollTop = el.scrollHeight;
+  }
+  let laneTarget = "lane-wire";
+  const log = (kind, text) => lane(laneTarget, kind, text);
+
+  /* ---------- 01 wire --------------------------------------------------- */
+
+  const RESET_LABELS = [
+    "DTR released — IO0 high",
+    "RTS asserted — EN low, chip held in reset",
+    "DTR asserted — IO0 pulled low",
+    "RTS released — EN high, chip starts with IO0 low",
+    "DTR released — IO0 free again",
+    "SYNC",
+  ];
+  function drawSteps(states) {
+    $("reset-steps").innerHTML = RESET_LABELS
+      .map((l, i) => `<li class="${states[i] || ""}">${esc(states[i + 100] || l)}</li>`).join("");
+  }
+  drawSteps({});
+
+  if (!K.SerialTransport.available()) {
+    $("serial-unsupported").classList.remove("hidden");
+    $("src").value = "sim";
+  }
+
+  function kv(id, pairs) {
+    $(id).innerHTML = pairs.map(([k, v]) => `<div><span>${esc(k)}</span><span>${v}</span></div>`).join("");
+  }
+
+  async function connect() {
+    const states = {};
+    drawSteps(states);
+    $("reset-help").classList.add("hidden");
+    laneTarget = "lane-wire";
+    const baud = parseInt($("baud").value, 10);
+    try {
+      if ($("src").value === "sim") {
+        const sim = new K.SimBootloader({ size: parseInt($("sim-size").value, 10), faults: S.faults });
+        S.transport = new K.SimTransport(sim);
+        S.sim = sim;
+      } else {
+        S.transport = new K.SerialTransport();
+        await S.transport.open(115200);
+      }
+      S.loader = new K.Loader(S.transport, { log });
+      log("note", "port open on " + S.transport.describe());
+
+      await S.loader.enterBootloader((i, state, text) => {
+        states[i] = state; states[i + 100] = text; drawSteps(states);
+      });
+
+      const id = await S.loader.identify();
+      S.chip = id.chip; S.mac = id.mac; S.connected = true;
+
+      if (baud !== 115200 && S.transport.setBaud) {
+        try { await S.loader.changeBaud(baud); } catch (e) { log("note", "stayed at 115200: " + e.message); }
+      }
+
+      kv("chip-kv", [
+        ["wire", esc(S.transport.describe())],
+        ["chip magic", "0x" + id.magic.toString(16).padStart(8, "0")],
+        ["chip", id.chip.supported ? esc(id.chip.name) : `<span style="color:var(--red)">${esc(id.chip.name)} — KEEL is an ESP32 bench only</span>`],
+        ["status bytes", String(S.loader.statusLen) + (S.loader.statusLen === 2 ? " (ESP32 ROM)" : " (post-ESP32)")],
+        ["eFuse MAC", id.mac ? esc(id.mac) : "<span class='muted'>not read</span>"],
+        ["chip revision", "<span class='muted'>not read — KEEL does not decode the eFuse block for it</span>"],
+        ["flash size", "<span class='assume'>not detected — you declare it in station 04</span>"],
+        ["write block", S.loader.blockSize + " B (ROM loader, no stub)"],
+        ["baud", String(S.transport.baud || baud)],
+      ]);
+      $("btn-connect").disabled = true;
+      $("btn-disconnect").disabled = false;
+      $("btn-run-app").disabled = false;
+      $("btn-mon").disabled = false;
+      if (S.entries.length) renderImage();
+      refreshPlan();
+      log("note", "bootloader is answering; go to station 03");
+    } catch (e) {
+      log("err", e.message);
+      $("reset-help").classList.remove("hidden");
+      kv("chip-kv", [["state", `<span style="color:var(--red)">${esc(e.message)}</span>`]]);
+      try { if (S.transport) await S.transport.close(); } catch (_) {}
+      S.connected = false;
+    }
+  }
+  $("btn-connect").addEventListener("click", connect);
+  $("btn-disconnect").addEventListener("click", async () => {
+    try { await S.transport.close(); } catch (e) {}
+    S.connected = false; S.loader = null;
+    $("btn-connect").disabled = false; $("btn-disconnect").disabled = true;
+    $("btn-burn").disabled = true; $("btn-run-app").disabled = true; $("btn-mon").disabled = true;
+    kv("chip-kv", [["state", "port released"]]);
+    log("note", "port released — WATCHFIRE can have it now");
+  });
+
+  /* ---------- 02 board -------------------------------------------------- */
+
+  (function drawBoard() {
+    const rows = K.DIY_PINS.map(p => `<tr><td>GPIO ${p.pin}</td><td>${esc(p.sig)}</td><td class="muted">${esc(p.note)}</td></tr>`).join("");
+    $("pintable").innerHTML = "<thead><tr><th>Pin</th><th>Firmware name</th><th>Note</th></tr></thead><tbody>" + rows + "</tbody>";
+
+    const radio = K.DIY_PINS.slice(0, 10);
+    const H = 60 + radio.length * 30;
+    const lines = radio.map((p, i) => {
+      const y = 52 + i * 30;
+      return `<line x1="120" y1="${y}" x2="330" y2="${y}" stroke="var(--rule)"/>
+        <text x="112" y="${y + 4}" text-anchor="end" font-size="12" fill="var(--bone)" font-family="var(--data)">GPIO ${p.pin}</text>
+        <text x="225" y="${y - 5}" text-anchor="middle" font-size="10.5" fill="var(--brass)" font-family="var(--data)">${esc(p.sig)}</text>
+        <circle cx="120" cy="${y}" r="3" fill="var(--brass)"/><circle cx="330" cy="${y}" r="3" fill="var(--brass)"/>`;
+    }).join("");
+    $("pinmap").innerHTML = `<svg viewBox="0 0 460 ${H}" role="img" aria-label="diy-v1 signal map from the ESP32 to the LoRa module">
+      <rect x="14" y="30" width="106" height="${H - 60}" fill="none" stroke="var(--rule)"/>
+      <text x="67" y="22" text-anchor="middle" font-size="11" fill="var(--dim)" font-family="var(--data)">ESP-WROOM-32</text>
+      <rect x="330" y="30" width="112" height="${H - 60}" fill="none" stroke="var(--rule)"/>
+      <text x="386" y="22" text-anchor="middle" font-size="11" fill="var(--dim)" font-family="var(--data)">SX127x / SX126x</text>
+      ${lines}
+      <text x="230" y="${H - 12}" text-anchor="middle" font-size="10.5" fill="var(--faint)" font-family="var(--data)">plus 3V3 and GND — signals only above</text>
+    </svg>`;
+
+    $("preflight").innerHTML = K.PREFLIGHT
+      .map((t, i) => `<label class="check"><input type="checkbox" data-pf="${i}"> ${esc(t)}</label>`).join("");
+  })();
+
+  /* ---------- 03 image -------------------------------------------------- */
+
+  const drop = $("drop");
+  drop.addEventListener("click", () => $("file").click());
+  drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("hot"); });
+  drop.addEventListener("dragleave", () => drop.classList.remove("hot"));
+  drop.addEventListener("drop", e => {
+    e.preventDefault(); drop.classList.remove("hot");
+    takeFiles(Array.from(e.dataTransfer.files));
+  });
+  $("file").addEventListener("change", e => takeFiles(Array.from(e.target.files)));
+
+  async function takeFiles(files) {
+    const entries = [];
+    try {
+      for (const f of files) {
+        const buf = new Uint8Array(await f.arrayBuffer());
+        if (/\.zip$/i.test(f.name)) {
+          for (const e of K.readZip(buf)) entries.push(e);
+        } else {
+          entries.push({ name: f.name, size: buf.length, method: 0, data: buf });
+        }
+      }
+    } catch (e) {
+      $("image-out").classList.remove("hidden");
+      $("zip-table").innerHTML = `<tbody><tr><td style="color:var(--red)">${esc(e.message)}</td></tr></tbody>`;
+      return;
+    }
+    S.entries = entries;
+    readScript();
+    renderImage();
+    refreshPlan();
+  }
+
+  function readScript() {
+    const cand = S.entries.find(e => /device-install\.(sh|bat)$/i.test(e.name))
+      || S.entries.find(e => /install.*\.(sh|bat)$/i.test(e.name))
+      || S.entries.find(e => /\.(sh|bat)$/i.test(e.name));
+    if (cand) {
+      S.scriptSource = cand.name;
+      S.script = K.parseInstallScript(K.ascii(cand.data), cand.name);
+      if (!S.script.writes.length) S.script = null;
+    } else {
+      S.script = null; S.scriptSource = null;
+    }
+  }
+
+  function fallbackWrites() {
+    const out = [];
+    for (const f of K.FALLBACK_LAYOUT) {
+      const e = S.entries.find(x => f.match.test(x.name.split("/").pop()));
+      if (e) out.push({ offset: f.offset, token: e.name, unresolved: false, assumed: true, line: f.why });
+    }
+    return out;
+  }
+
+  function currentWrites() {
+    if (S.script) {
+      return S.script.writes.map(w => {
+        if (!w.unresolved) return w;
+        const bound = (S.binds || {})[w.n + ":" + w.token];
+        return Object.assign({}, w, { bound, unresolved: !bound });
+      });
+    }
+    return fallbackWrites();
+  }
+
+  function renderImage() {
+    $("image-out").classList.remove("hidden");
+    $("zip-table").innerHTML = "<thead><tr><th>Name</th><th>Size</th><th>Stored as</th></tr></thead><tbody>" +
+      S.entries.map(e => `<tr><td>${esc(e.name)}</td><td class="n">${K.bytesHuman(e.size)}</td><td class="muted">${e.method === 8 ? "deflate" : "stored"}</td></tr>`).join("") +
+      "</tbody>";
+
+    const c = $("script-card");
+    if (S.script) {
+      const rows = S.script.writes.map(w => {
+        const bindable = w.unresolved
+          ? `<select data-bind="${w.n}:${esc(w.token)}"><option value="">— pick the file —</option>` +
+            S.entries.filter(e => /\.bin$/i.test(e.name)).map(e => `<option>${esc(e.name)}</option>`).join("") + "</select>"
+          : esc(w.token);
+        return `<tr><td>${K.addr(w.offset)}</td><td>${bindable}</td><td class="muted">line ${w.n}: ${esc(w.line)}</td></tr>`;
+      }).join("");
+      c.innerHTML = `<p class="small" style="margin:0 0 10px">Offsets below come from <code>${esc(S.scriptSource)}</code> inside your archive, not from anything hard-coded in KEEL.</p>
+        <table><thead><tr><th>Offset</th><th>File</th><th>As written in the script</th></tr></thead><tbody>${rows}</tbody></table>
+        ${S.script.erase ? '<p class="small" style="margin:10px 0 0;color:var(--ember)">The script also asks for a whole-chip erase. The ROM loader cannot do that, so KEEL will not — see station 04.</p>' : ""}`;
+      c.querySelectorAll("select[data-bind]").forEach(sel => sel.addEventListener("change", () => {
+        S.binds = S.binds || {};
+        S.binds[sel.dataset.bind] = sel.value;
+        refreshPlan();
+      }));
+    } else {
+      const fw = fallbackWrites();
+      c.className = "card warn";
+      c.innerHTML = `<h4>No install script in this archive</h4>
+        <p class="small" style="margin:0 0 10px;color:var(--dim)">KEEL could not find <code>device-install.sh</code> or a <code>.bat</code> beside it, so the offsets below are <span class="assume">assumptions</span>, shown in brass wherever they appear. Check them against the release before approving anything.</p>
+        <table><thead><tr><th>Offset</th><th>File</th><th>Why</th></tr></thead><tbody>${
+          fw.map(w => `<tr><td class="assume">${K.addr(w.offset)}</td><td>${esc(w.token)}</td><td class="muted">${esc(w.line)}</td></tr>`).join("")
+        }</tbody></table>`;
+    }
+
+    const bins = S.entries.filter(e => /\.bin$/i.test(e.name));
+    $("hdr-table").innerHTML = "<thead><tr><th>File</th><th>Magic</th><th>Segments</th><th>Mode</th><th>Declares</th><th>Built for</th></tr></thead><tbody>" +
+      bins.map(e => {
+        const h = K.parseImageHeader(e.data);
+        if (!h.valid) return `<tr><td>${esc(e.name)}</td><td colspan="5" class="muted">no image header — ${esc(h.why)} (normal for a filesystem image)</td></tr>`;
+        return `<tr><td>${esc(e.name)}</td><td>0xE9</td><td class="n">${h.segments}</td><td>${esc(h.mode)}</td><td>${esc(h.size)} @ ${esc(h.freq)}</td><td>${esc(h.chip)}</td></tr>`;
+      }).join("") + "</tbody>";
+
+    renderGate(bins);
+  }
+
+  function firmwareEntry() {
+    return S.entries.find(e => /^firmware-.*\.bin$/i.test(e.name.split("/").pop()))
+      || S.entries.find(e => /\.bin$/i.test(e.name) && K.parseImageHeader(e.data).valid);
+  }
+
+  function renderGate() {
+    const g = $("variant-gate");
+    const fw = firmwareEntry();
+    if (!fw) { g.innerHTML = ""; return; }
+    const h = K.parseImageHeader(fw.data);
+    const variant = (fw.name.split("/").pop().match(/^firmware-(.+?)-\d/) || [, "(not in the filename)"])[1];
+    if (!S.connected) {
+      g.innerHTML = `<div class="card"><h4>Variant: ${esc(variant)}</h4><p class="small muted" style="margin:0">Connect a board in station 01 and KEEL will check this image against the chip that is actually on the wire.</p></div>`;
+      return;
+    }
+    const want = S.chip.imageChipId;
+    if (h.valid && want != null && h.chipId === want) {
+      g.innerHTML = `<div class="card good"><h4>Variant: ${esc(variant)}</h4><p class="small" style="margin:0;color:var(--dim)">The image is built for ${esc(h.chip)} and the chip on the wire is ${esc(S.chip.name)}. Go to station 04.</p></div>`;
+      S.gateOpen = true;
+    } else {
+      S.gateOpen = false;
+      g.innerHTML = `<div class="card stop"><h4>This image is not built for the chip on the wire</h4>
+        <p class="small" style="margin:0 0 10px;color:var(--dim)">Image declares <b>${esc(h.chip)}</b>. The wire says <b>${esc(S.chip.name)}</b>. Writing it produces a board that flashes cleanly and never boots.</p>
+        <label class="f" for="override">Type OVERRIDE to proceed anyway</label>
+        <input type="text" id="override" autocomplete="off" spellcheck="false"></div>`;
+      const inp = $("override");
+      inp && inp.addEventListener("input", () => { S.gateOpen = inp.value.trim() === "OVERRIDE"; refreshPlan(); });
+    }
+    refreshPlan();
+  }
+
+  /* ---------- 04 plan --------------------------------------------------- */
+
+  ["flashsize", "compress", "skip-fs"].forEach(id => $(id).addEventListener("change", refreshPlan));
+  $("ack-plan").addEventListener("change", () => {
+    $("btn-approve").disabled = !$("ack-plan").checked || !(S.plan && S.plan.canRun);
+  });
+  $("btn-approve").addEventListener("click", () => {
+    S.approved = true;
+    $("btn-burn").disabled = !(S.connected && S.plan && S.plan.canRun);
+    drawMap();
+    showStation("burn");
+  });
+
+  function refreshPlan() {
+    const writes = currentWrites().filter(w => !w.unresolved);
+    if (!S.entries.length || !writes.length) {
+      $("plan-empty").classList.remove("hidden");
+      $("plan-out").classList.add("hidden");
+      S.plan = null;
+      return;
+    }
+    $("plan-empty").classList.add("hidden");
+    $("plan-out").classList.remove("hidden");
+
+    const flashSize = parseInt($("flashsize").value, 10);
+    S.plan = K.buildPlan({ entries: S.entries, writes, flashSize, skipFs: $("skip-fs").checked });
+    S.plan.compress = $("compress").value === "1";
+
+    const declared = (() => {
+      const fw = firmwareEntry();
+      const h = fw && K.parseImageHeader(fw.data);
+      return h && h.valid ? h.size : null;
+    })();
+    $("flashsize-note").innerHTML = `<b>Flash size is declared, not detected.</b> KEEL does not read the SPI flash ID — on the ROM loader that means driving the SPI peripheral by hand, and a guessed size is worse than an honest one. It is used for the map, the bounds check, and the parameters handed to the bootloader.
+      ${declared ? ` The firmware image declares <b>${esc(declared)}</b>; if that disagrees with what you selected, one of the two is wrong.` : ""}`;
+
+    const rows = S.plan.regions.map(r => `<tr>
+        <td${r.assumed ? ' class="assume"' : ""}>${K.addr(r.offset)}</td>
+        <td>${esc(r.name)}${r.skipped ? ' <span class="tag">skipped</span>' : ""}</td>
+        <td class="n">${K.bytesHuman(r.size)}</td>
+        <td class="n">${K.addr(r.offset + r.size)}</td>
+        <td>${S.plan.compress ? "deflate" : "raw"}</td>
+        <td>erased then written</td>
+        <td class="mono muted">${r.md5}</td>
+      </tr>`).join("");
+    $("plan-table").innerHTML = `<thead><tr><th>Offset</th><th>File</th><th>Size</th><th>Ends</th><th>Sent as</th><th>Region</th><th>MD5 we expect</th></tr></thead><tbody>${rows}</tbody>
+      <tfoot><tr><td colspan="2" class="muted">${S.plan.regions.filter(r => !r.skipped).length} regions</td><td class="n">${K.bytesHuman(S.plan.totalBytes)}</td><td colspan="4" class="muted">${S.plan.compress ? "compressed with " + K.deflateMethod() : "sent byte for byte"}</td></tr></tfoot>`;
+
+    const probs = S.plan.problems;
+    let extra = "";
+    if (!S.gateOpen && S.connected) { S.plan.canRun = false; extra = "The image and the chip on the wire disagree — station 03 has the gate."; }
+    if (probs.length || extra) {
+      $("plan-approve").className = "card stop";
+      $("plan-approve").innerHTML = `<h4>Not ready to write</h4><ul class="small" style="margin:0;padding-left:18px;color:var(--dim)">${
+        probs.map(p => `<li>${esc(p.text)}</li>`).join("")}${extra ? `<li>${esc(extra)}</li>` : ""}</ul>`;
+    } else {
+      $("plan-approve").className = "card";
+      $("plan-approve").innerHTML = `<label class="check"><input type="checkbox" id="ack-plan"> I have read the plan above and the regions listed are the regions I want overwritten.</label>
+        <button class="act primary" id="btn-approve" disabled>Approve plan and open station 05</button>`;
+      $("ack-plan").addEventListener("change", () => { $("btn-approve").disabled = !$("ack-plan").checked; });
+      $("btn-approve").addEventListener("click", () => {
+        S.approved = true;
+        $("btn-burn").disabled = !S.connected;
+        drawMap(); showStation("burn");
+      });
+    }
+    drawMap();
+  }
+
+  /* ---------- THE MAP --------------------------------------------------- */
+
+  function drawMap() {
+    const host = $("map");
+    if (!S.plan) { host.innerHTML = `<p class="small muted" style="margin:0">No plan to draw yet.</p>`; return; }
+    const H = K.MAP_H, W = 260;
+    const bands = K.mapGeometry(S.plan.regions, S.plan.flashSize, H);
+    const ticks = [];
+    const step = S.plan.flashSize / 8;
+    for (let a = 0; a <= S.plan.flashSize; a += step) {
+      const y = Math.round((a / S.plan.flashSize) * H);
+      ticks.push(`<line x1="60" y1="${y}" x2="66" y2="${y}" stroke="var(--rule)"/>
+        <text x="56" y="${y + 4}" text-anchor="end" font-size="11" fill="var(--faint)" font-family="var(--data)">${K.addr(a)}</text>`);
+    }
+    const drawn = bands.map(b => {
+      const color = K.STATE_COLOR[b.state] || "var(--faint)";
+      const solid = b.state === "verified";
+      const fillH = Math.max(0, Math.round(b.h * b.fill));
+      return `<g>
+        <rect x="70" y="${b.y}" width="${W - 90}" height="${b.h}" fill="none" stroke="${color}"/>
+        ${fillH ? `<rect x="70" y="${b.y}" width="${W - 90}" height="${fillH}" fill="${color}" opacity="${solid ? 0.5 : 0.32}"/>` : ""}
+        <text x="76" y="${b.y + Math.min(b.h - 3, 13)}" font-size="11" fill="var(--bone)" font-family="var(--data)">${esc(b.name.split("/").pop().slice(0, 26))}</text>
+        ${b.h > 30 ? `<text x="76" y="${b.y + 26}" font-size="10" fill="${color}" font-family="var(--data)">${esc(b.state)}${b.chipMd5 ? " · " + b.chipMd5.slice(0, 12) : ""}</text>` : ""}
+      </g>`;
+    }).join("");
+    host.innerHTML = `<svg viewBox="0 0 ${W} ${H + 16}" role="img" aria-label="flash address map">
+      <rect x="70" y="0" width="${W - 90}" height="${H}" fill="#0a1015" stroke="var(--rule)"/>
+      ${ticks.join("")}
+      ${drawn}
+      <text x="${70 + (W - 90) / 2}" y="${H + 13}" text-anchor="middle" font-size="10" fill="var(--faint)" font-family="var(--data)">${K.bytesHuman(S.plan.flashSize)} declared · empty space is untouched</text>
+    </svg>`;
+  }
+
+  /* ---------- 05 burn --------------------------------------------------- */
+
+  $("btn-abort").addEventListener("click", () => { if (S.loader) S.loader.abort = true; });
+
+  $("btn-burn").addEventListener("click", async () => {
+    if (!S.plan || !S.connected || !S.approved) return;
+    laneTarget = "lane-burn";
+    S.loader.abort = false;
+    $("btn-burn").disabled = true;
+    $("btn-abort").classList.remove("hidden");
+    $("burn-msg").innerHTML = "";
+    for (const r of S.plan.regions) { r.state = r.skipped ? "skipped" : "planned"; r.sent = 0; r.chipMd5 = null; }
+    drawMap();
+    const t0 = Date.now();
+    let done = 0;
+    const total = S.plan.totalBytes;
+    $("s-total").textContent = K.bytesHuman(total);
+
+    const tick = () => {
+      const secs = (Date.now() - t0) / 1000;
+      $("s-sent").textContent = K.bytesHuman(done);
+      $("s-time").textContent = secs.toFixed(1) + " s";
+      $("s-rate").textContent = secs > 0.5 ? K.bytesHuman(done / secs) + "/s" : "—";
+      $("s-retry").textContent = String(S.loader.retries);
+      $("bar-fill").style.width = Math.round((done / Math.max(1, total)) * 100) + "%";
+    };
+    const timer = setInterval(tick, 200);
+
+    S.run = { started: new Date().toISOString(), regions: [], chip: S.chip.name, mac: S.mac, flashSize: S.plan.flashSize, compressed: S.plan.compress, ok: false };
+
+    try {
+      await S.loader.prepareFlash(S.plan.flashSize);
+      for (const r of S.plan.regions) {
+        if (r.skipped) continue;
+        const base = done;
+        r.state = "erasing"; r.sent = 0; drawMap();
+        await S.loader.writeRegion(r, {
+          compress: S.plan.compress,
+          onProgress: n => { r.state = "writing"; r.sent = n; done = base + n; drawMap(); },
+        });
+        r.state = "verifying"; drawMap();
+        const chipMd5 = await S.loader.digest(r.offset, r.size);
+        r.chipMd5 = chipMd5;
+        if (chipMd5 !== r.md5) {
+          r.state = "failed";
+          drawMap();
+          S.run.regions.push(recordOf(r, false));
+          throw new Error("digest mismatch at " + K.addr(r.offset) + ": the chip reports " + chipMd5 + ", we sent " + r.md5);
+        }
+        r.state = "verified"; drawMap();
+        S.run.regions.push(recordOf(r, true));
+        log("note", r.name + " verified");
+      }
+      S.run.ok = true;
+      $("burn-msg").innerHTML = `<div class="card good"><h4>Every region verified</h4><p class="small" style="margin:0;color:var(--dim)">The bytes are on the chip. That is all this proves — station 07 has the two things that come next.</p></div>`;
+    } catch (e) {
+      const failing = S.plan.regions.find(r => r.state === "writing" || r.state === "erasing" || r.state === "verifying");
+      if (failing) failing.state = "failed";
+      drawMap();
+      S.run.error = e.message;
+      $("burn-msg").innerHTML = `<div class="card stop"><h4>Stopped</h4><p class="small" style="margin:0 0 8px">${esc(e.message)}</p>
+        <p class="small muted" style="margin:0">The map is left exactly where it stopped. Regions already solid are on the chip and verified; the red band is not, and neither is anything below it.</p></div>`;
+      log("err", e.message);
+    } finally {
+      clearInterval(timer); tick();
+      $("btn-abort").classList.add("hidden");
+      $("btn-burn").disabled = false;
+      laneTarget = "lane-wire";
+      renderProof();
+    }
+  });
+
+  function recordOf(r, ok) {
+    return { offset: K.addr(r.offset), name: r.name, size: r.size, expected: r.md5, reported: r.chipMd5 || null, verdict: ok ? "match" : "MISMATCH" };
+  }
+
+  /* ---------- 06 proof -------------------------------------------------- */
+
+  function renderProof() {
+    if (!S.run) return;
+    $("proof-empty").classList.add("hidden");
+    $("proof-out").classList.remove("hidden");
+    $("proof-table").innerHTML = "<thead><tr><th>Offset</th><th>File</th><th>Size</th><th>Expected</th><th>Chip reports</th><th>Verdict</th></tr></thead><tbody>" +
+      S.run.regions.map(r => `<tr><td>${r.offset}</td><td>${esc(r.name)}</td><td class="n">${K.bytesHuman(r.size)}</td>
+        <td class="mono muted">${r.expected}</td><td class="mono">${r.reported || "—"}</td>
+        <td><span class="tag ${r.verdict === "match" ? "ok" : "bad"}">${r.verdict}</span></td></tr>`).join("") + "</tbody>";
+    $("proof-verdict").className = "card " + (S.run.ok ? "good" : "stop");
+    $("proof-verdict").innerHTML = S.run.ok
+      ? `<h4>Verified</h4><p class="small" style="margin:0;color:var(--dim)">Every region's digest was read back off the chip and matched. Keep this record with the node.</p>`
+      : `<h4>Not verified</h4><p class="small" style="margin:0;color:var(--dim)">${esc(S.run.error || "the run did not finish")}</p>`;
+  }
+
+  function save(name, text, type) {
+    const b = new Blob([text], { type });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(b); a.download = name;
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  }
+  $("btn-export-json").addEventListener("click", () => {
+    save("keel-record-" + (S.mac || "node").replace(/:/g, "") + ".json", JSON.stringify(Object.assign({ instrument: "KEEL", version: K.VERSION }, S.run), null, 2), "application/json");
+  });
+  $("btn-export-txt").addEventListener("click", () => {
+    const L = [];
+    L.push("KEEL v" + K.VERSION + " — flash record");
+    L.push("run started   " + S.run.started);
+    L.push("chip          " + S.run.chip + (S.run.mac ? "  MAC " + S.run.mac : ""));
+    L.push("flash size    " + K.bytesHuman(S.run.flashSize) + " (declared by the operator, not detected)");
+    L.push("transfer      " + (S.run.compressed ? "deflate" : "raw") + ", ROM loader, no stub");
+    L.push("");
+    for (const r of S.run.regions) {
+      L.push(r.offset + "  " + r.name + "  " + r.size + " B");
+      L.push("            expected " + r.expected);
+      L.push("            chip     " + (r.reported || "—") + "   " + r.verdict);
+    }
+    L.push("");
+    L.push(S.run.ok ? "ALL REGIONS VERIFIED" : "RUN DID NOT COMPLETE: " + (S.run.error || ""));
+    L.push("A verified write is not a working node: region is unset until someone sets it.");
+    save("keel-record-" + (S.mac || "node").replace(/:/g, "") + ".txt", L.join("\n"), "text/plain");
+  });
+
+  /* ---------- 07 handoff ------------------------------------------------ */
+
+  $("btn-run-app").addEventListener("click", async () => {
+    if (S.loader) await S.loader.runApplication();
+    $("bootlog").textContent += "\n— reset into the application —\n";
+  });
+  $("btn-mon").addEventListener("click", async () => {
+    if (!S.transport) return;
+    if (S.transport.setBaud && S.transport.baud !== 115200) { try { await S.transport.setBaud(115200); } catch (e) {} }
+    S.monitoring = true; S.bootText = "";
+    S.transport.onData = bytes => {
+      S.bootText += K.ascii(bytes).replace(/\r/g, "");
+      if (S.bootText.length > 40000) S.bootText = S.bootText.slice(-40000);
+      $("bootlog").textContent = S.bootText;
+      $("bootlog").scrollTop = $("bootlog").scrollHeight;
+      readBoot(S.bootText);
+    };
+    $("btn-mon").disabled = true; $("btn-mon-stop").disabled = false;
+    if (S.loader) await S.loader.runApplication();
+  });
+  $("btn-mon-stop").addEventListener("click", () => {
+    S.monitoring = false;
+    if (S.transport && S.loader) S.transport.onData = b => S.loader.dec.push(b);
+    $("btn-mon").disabled = false; $("btn-mon-stop").disabled = true;
+  });
+
+  function readBoot(text) {
+    const found = [];
+    if (/no radio|radio not found|Failed to find|LoRa radio init failed|SX12.*fail/i.test(text))
+      found.push(["stop", "The firmware cannot find a radio", "On a DIY build this is the expected first failure and it means wiring, not firmware. Check SCK 5, MOSI 27, MISO 19, CS 18, RESET 23, and that the module has 3.3 V."]);
+    if (/Radio init.*OK|RF95 init|SX126[128].*(ok|success)|Starting meshtastic/i.test(text))
+      found.push(["good", "The radio answered", "The SPI wiring is right. Set the region next."]);
+    if (/region.*(unset|not set)|Setting region|LoRa region/i.test(text))
+      found.push(["warn", "Region", "Set it in WATCHFIRE before expecting traffic. Match it to the module you soldered on."]);
+    $("boot-findings").innerHTML = found.map(([k, h, b]) =>
+      `<div class="card ${k === "stop" ? "stop" : k === "good" ? "good" : "warn"}"><h4>${esc(h)}</h4><p class="small" style="margin:0;color:var(--dim)">${esc(b)}</p></div>`).join("");
+  }
+
+  /* ---------- 08 simulator ---------------------------------------------- */
+
+  $("faults").innerHTML = K.FAULTS.map(([k, label]) =>
+    `<label class="check"><input type="checkbox" data-fault="${k}"> ${esc(label)}</label>`).join("");
+  $("faults").querySelectorAll("input[data-fault]").forEach(cb => cb.addEventListener("change", () => {
+    S.faults[cb.dataset.fault] = cb.checked;
+    if (S.sim) S.sim.faults = S.faults;
+  }));
+
+  $("btn-sim-load").addEventListener("click", () => {
+    S.entries = K.syntheticRelease();
+    readScript();
+    renderImage();
+    refreshPlan();
+    showStation("image");
+  });
+
+  $("btn-selftest").addEventListener("click", async () => {
+    const out = $("selftest-out");
+    out.textContent = "running…\n";
+    const res = await K.selfTest();
+    out.textContent = res.lines.join("\n");
+    out.scrollTop = 0;
+    const badge = $("selftest-badge");
+    badge.textContent = res.failed ? res.passed + "/" + res.total + " assertions — " + res.failed + " FAILED" : res.total + "/" + res.total + " assertions green";
+    badge.style.color = res.failed ? "var(--red)" : "var(--verd)";
+  });
+})();
+/* ============================================================================
+   Section 5 — a synthetic release, and the self-test that drives the whole
+   instrument with nothing plugged in.
+   ========================================================================== */
+
+K.syntheticImage = function (bytes, chipId, sizeCode) {
+  const d = new Uint8Array(bytes);
+  for (let i = 0; i < d.length; i++) d[i] = (i * 37 + (i >> 8) * 11) & 0xff;
+  d[0] = 0xe9; d[1] = 3; d[2] = 2;                       // magic, segments, DIO
+  d[3] = ((sizeCode == null ? 2 : sizeCode) << 4) | 0x0f; // size code + 80 MHz
+  new DataView(d.buffer).setUint32(4, 0x400806a8, true);  // entry point
+  d[12] = chipId & 0xff; d[13] = (chipId >> 8) & 0xff;    // extended header chip id
+  return d;
+};
+
+K.SYNTH_SCRIPT = [
+  "#!/usr/bin/env bash",
+  "# device-install.sh - synthetic, for the KEEL simulator",
+  'ESPTOOL_CMD="esptool"',
+  '"$ESPTOOL_CMD" --baud 115200 erase_flash',
+  '"$ESPTOOL_CMD" --baud 115200 write_flash 0x00 firmware-diy-v1-2.9.9.bin',
+  '"$ESPTOOL_CMD" --baud 115200 write_flash 0x260000 bleota.bin',
+  '"$ESPTOOL_CMD" --baud 115200 write_flash 0x300000 littlefs-2.9.9.bin',
+  "",
+].join("\n");
+
+K.syntheticRelease = function () {
+  return [
+    { name: "firmware-diy-v1-2.9.9.bin", method: 0, size: 96 * 1024, data: K.syntheticImage(96 * 1024, 0, 2) },
+    { name: "bleota.bin", method: 0, size: 20 * 1024, data: K.syntheticImage(20 * 1024, 0, 2) },
+    { name: "littlefs-2.9.9.bin", method: 0, size: 32 * 1024, data: (() => { const d = new Uint8Array(32 * 1024); for (let i = 0; i < d.length; i++) d[i] = (i * 7) & 0xff; return d; })() },
+    { name: "device-install.sh", method: 0, size: K.SYNTH_SCRIPT.length, data: K.fromAscii(K.SYNTH_SCRIPT) },
+  ];
+};
+
+/* A hand-built zip, so the archive reader is asserted rather than assumed. */
+K.buildTestZip = function (files) {
+  const enc = s => K.fromAscii(s);
+  const locals = [], central = [];
+  let offset = 0;
+  const crcTable = (() => {
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; }
+    return t;
+  })();
+  const crc32 = d => { let c = 0xffffffff; for (let i = 0; i < d.length; i++) c = crcTable[(c ^ d[i]) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+
+  for (const f of files) {
+    const name = enc(f.name);
+    const body = f.stored ? f.data : f.deflated;
+    const method = f.stored ? 0 : 8;
+    const lh = new Uint8Array(30 + name.length);
+    const dv = new DataView(lh.buffer);
+    dv.setUint32(0, 0x04034b50, true); dv.setUint16(4, 20, true); dv.setUint16(6, 0, true);
+    dv.setUint16(8, method, true); dv.setUint32(14, crc32(f.data), true);
+    dv.setUint32(18, body.length, true); dv.setUint32(22, f.data.length, true);
+    dv.setUint16(26, name.length, true); dv.setUint16(28, 0, true);
+    lh.set(name, 30);
+    locals.push(lh, body);
+
+    const ch = new Uint8Array(46 + name.length);
+    const cv = new DataView(ch.buffer);
+    cv.setUint32(0, 0x02014b50, true); cv.setUint16(4, 20, true); cv.setUint16(6, 20, true);
+    cv.setUint16(10, method, true); cv.setUint32(16, crc32(f.data), true);
+    cv.setUint32(20, body.length, true); cv.setUint32(24, f.data.length, true);
+    cv.setUint16(28, name.length, true); cv.setUint32(42, offset, true);
+    ch.set(name, 46);
+    central.push(ch);
+    offset += lh.length + body.length;
+  }
+  const cd = K.concat(...central);
+  const eocd = new Uint8Array(22);
+  const ev = new DataView(eocd.buffer);
+  ev.setUint32(0, 0x06054b50, true);
+  ev.setUint16(8, files.length, true); ev.setUint16(10, files.length, true);
+  ev.setUint32(12, cd.length, true); ev.setUint32(16, offset, true);
+  return K.concat(K.concat(...locals), cd, eocd);
+};
+
+/* ---------- vectors ---------------------------------------------------- */
+
+K.VEC = {
+  deflateFixed: { out: "keel", bytes: [203, 78, 77, 205, 1, 0] },
+  deflateDynamic: {
+    len: 486, md5: "50dd915ca7a7d96e96a03a4aeca32a0c",
+    bytes: [237,204,219,13,194,48,12,5,208,85,238,4,136,247,99,143,46,224,166,110,28,154,184,16,59,64,153,30,137,37,248,225,251,72,167,19,198,196,156,145,12,46,140,49,85,115,152,215,22,188,85,202,40,92,122,174,32,29,190,158,201,28,46,73,35,150,185,33,144,34,8,105,228,21,186,127,245,139,138,250,48,240,24,37,93,167,92,116,190,221,171,121,123,60,95,203,123,189,217,238,246,135,227,233,124,249,0],
+  },
+  md5: [
+    ["", "d41d8cd98f00b204e9800998ecf8427e"],
+    ["a", "0cc175b9c0f1b6a831c399e269772661"],
+    ["abc", "900150983cd24fb0d6963f7d28e17f72"],
+    ["message digest", "f96b697d7cb7938d525a2f31aaf161d0"],
+    ["abcdefghijklmnopqrstuvwxyz", "c3fcd3d76192e4007dfb496cca67e13b"],
+    ["12345678901234567890123456789012345678901234567890123456789012345678901234567890", "57edf4a22be3c955ac49da2e2107b67a"],
+  ],
+};
+
+/* ---------- the self-test ---------------------------------------------- */
+
+K.selfTest = async function () {
+  const lines = [];
+  let passed = 0, failed = 0;
+  const ok = (name, cond, detail) => {
+    if (cond) { passed++; lines.push("  ok   " + name); }
+    else { failed++; lines.push("  FAIL " + name + (detail ? "  — " + detail : "")); }
+  };
+  const eq = (name, a, b) => ok(name, JSON.stringify(a) === JSON.stringify(b), "got " + JSON.stringify(a) + ", wanted " + JSON.stringify(b));
+  const throws = async (name, fn) => {
+    try { await fn(); ok(name, false, "no error thrown"); }
+    catch (e) { ok(name, true); }
+  };
+  const group = t => lines.push("", t);
+
+  /* --- SLIP --- */
+  group("SLIP framing");
+  const slipRound = payload => {
+    let got = null;
+    const d = new K.SlipDecoder(f => { got = f; });
+    d.push(K.slipEncode(Uint8Array.from(payload)));
+    return got ? Array.from(got) : null;
+  };
+  eq("plain payload survives", slipRound([1, 2, 3]), [1, 2, 3]);
+  eq("0xC0 in payload survives", slipRound([0xc0]), [0xc0]);
+  eq("0xDB in payload survives", slipRound([0xdb]), [0xdb]);
+  eq("a frame of nothing but escapes survives", slipRound([0xc0, 0xdb, 0xc0, 0xdb]), [0xc0, 0xdb, 0xc0, 0xdb]);
+  eq("0xC0 is encoded as DB DC", Array.from(K.slipEncode(Uint8Array.from([0xc0]))), [0xc0, 0xdb, 0xdc, 0xc0]);
+  eq("0xDB is encoded as DB DD", Array.from(K.slipEncode(Uint8Array.from([0xdb]))), [0xc0, 0xdb, 0xdd, 0xc0]);
+  (function () {
+    let stray = null, frames = 0;
+    const d = new K.SlipDecoder(() => frames++, s => { stray = K.ascii(s); });
+    d.push(K.concat(K.fromAscii("ets Jun 8 2016"), K.slipEncode(Uint8Array.from([9]))));
+    ok("bytes outside a frame are reported, not thrown away", stray === "ets Jun 8 2016" && frames === 1, "stray=" + stray + " frames=" + frames);
+  })();
+  (function () {
+    let frames = 0;
+    const d = new K.SlipDecoder(() => frames++);
+    d.push(Uint8Array.from([0xc0, 0xc0, 0xc0, 5, 0xc0]));
+    ok("empty frames between delimiters are ignored", frames === 1, "frames=" + frames);
+  })();
+
+  /* --- packets --- */
+  group("Command packets and responses");
+  eq("checksum seeds at 0xEF", K.checksum(Uint8Array.from([])), 0xef);
+  eq("checksum XORs the payload", K.checksum(Uint8Array.from([0x01, 0x02])), 0xef ^ 1 ^ 2);
+  (function () {
+    const p = K.buildCommand(K.CMD.FLASH_DATA, Uint8Array.from([1, 2, 3]), 0xee);
+    eq("request header is direction, command, length, checksum", Array.from(p.subarray(0, 8)), [0, 0x03, 3, 0, 0xee, 0, 0, 0]);
+  })();
+  const resp = (cmd, payload, status) => Uint8Array.from([0x01, cmd, 0, 0, 0, 0, 0, 0, ...payload, ...status]);
+  (function () {
+    const r = K.parseResponse(resp(0x02, [], [0, 0]), 2);
+    ok("a two-byte status parses as success on the ESP32 ROM", r.ok && r.cmd === 0x02);
+    const bad = K.parseResponse(resp(0x02, [], [1, 0x08]), 2);
+    ok("a failing status is a failure", !bad.ok && bad.err === 0x08);
+    const four = K.parseResponse(resp(0x02, [], [0, 0, 0, 0]), 4);
+    ok("a four-byte status parses on later chips", four.ok && four.payload.length === 0);
+  })();
+  (function () {
+    // The mistake that matters: a four-byte status read as two leaves status
+    // bytes in the payload and the failure code in the wrong place.
+    const f = resp(0x02, [], [1, 0x08, 0, 0]);
+    const wrong = K.parseResponse(f, 2);
+    ok("reading a four-byte status as two does NOT silently pass", !(wrong.ok && wrong.payload.length === 0), "this is the failure mode the status length guards");
+  })();
+  await throws("a frame too short to hold a status is refused", () => K.parseResponse(Uint8Array.from([1, 2, 0, 0, 0, 0, 0, 0]), 2));
+  await throws("a frame with the wrong direction byte is refused", () => K.parseResponse(Uint8Array.from([0, 2, 0, 0, 0, 0, 0, 0, 0, 0]), 2));
+  eq("sync payload is 07 07 12 20 then 32 x 0x55", [K.SYNC_PAYLOAD.length, K.SYNC_PAYLOAD[0], K.SYNC_PAYLOAD[3], K.SYNC_PAYLOAD[4], K.SYNC_PAYLOAD[35]], [36, 0x07, 0x20, 0x55, 0x55]);
+
+  /* --- MD5 --- */
+  group("MD5 (RFC 1321 vectors)");
+  for (const [input, want] of K.VEC.md5) eq("md5(\"" + input.slice(0, 18) + (input.length > 18 ? "…" : "") + "\")", K.md5(input), want);
+  eq("md5 over a 1 MB buffer is stable", K.md5(new Uint8Array(1048576).fill(0xa5)).length, 32);
+
+  /* --- inflate / deflate --- */
+  group("Compressed formats");
+  eq("fixed-huffman vector inflates", K.ascii(K.inflateRaw(Uint8Array.from(K.VEC.deflateFixed.bytes))), K.VEC.deflateFixed.out);
+  (function () {
+    const got = K.inflateRaw(Uint8Array.from(K.VEC.deflateDynamic.bytes));
+    ok("dynamic-huffman vector inflates to the right bytes", got.length === K.VEC.deflateDynamic.len && K.md5(got) === K.VEC.deflateDynamic.md5,
+      got.length + " bytes, md5 " + K.md5(got));
+  })();
+  (function () {
+    const data = new Uint8Array(70000);
+    for (let i = 0; i < data.length; i++) data[i] = (i * 13) & 0xff;
+    const z = K.deflateStored(data);
+    ok("stored-block zlib round-trips through our own inflate", K.md5(K.inflateZlib(z)) === K.md5(data));
+    ok("stored blocks respect the 65535 limit", z.length > data.length && z.length < data.length + 40);
+  })();
+  eq("adler32 of \"abc\"", K.adler32(K.fromAscii("abc")), 0x024d0127);
+  await throws("a zlib header that fails its check is refused", () => K.inflateZlib(Uint8Array.from([0x78, 0x00, 0, 0])));
+  await throws("a reserved deflate block type is refused", () => K.inflateRaw(Uint8Array.from([0x07, 0, 0, 0])));
+  if (typeof CompressionStream === "function") {
+    const src = K.syntheticImage(9000, 0, 2);
+    const z = await K.deflateZlib(src);
+    ok("what CompressionStream produces, our inflate reads back", K.md5(K.inflateZlib(z)) === K.md5(src));
+  } else lines.push("  ---  CompressionStream absent; stored-block path is what will run here");
+
+  /* --- zip --- */
+  group("Archive reader");
+  (function () {
+    const a = K.fromAscii("bootloader");
+    const b = K.fromAscii(K.SYNTH_SCRIPT);
+    const zip = K.buildTestZip([
+      { name: "a.bin", data: a, stored: true },
+      { name: "device-install.sh", data: b, deflated: Uint8Array.from(K.VEC.deflateFixed.bytes), stored: false, forceMismatch: true },
+    ]);
+    // the deflated entry above intentionally does not match its declared size
+    let caught = false;
+    try { K.readZip(zip); } catch (e) { caught = /inflated to/.test(e.message); }
+    ok("an entry whose inflated length disagrees with the directory is refused", caught);
+  })();
+  await (async function () {
+    const a = K.fromAscii("bootloader");
+    const script = K.fromAscii(K.SYNTH_SCRIPT);
+    const entries = [{ name: "a.bin", data: a, stored: true }];
+    if (typeof CompressionStream === "function") {
+      const cs = new CompressionStream("deflate-raw");
+      const w = cs.writable.getWriter(); w.write(script); w.close();
+      const chunks = []; const r = cs.readable.getReader();
+      for (;;) { const { value, done } = await r.read(); if (done) break; chunks.push(value); }
+      entries.push({ name: "device-install.sh", data: script, deflated: K.concat(...chunks), stored: false });
+    }
+    const out = K.readZip(K.buildTestZip(entries));
+    ok("stored entries come back byte for byte", K.ascii(out[0].data) === "bootloader");
+    if (entries.length > 1) ok("deflated entries come back byte for byte", K.ascii(out[1].data) === K.SYNTH_SCRIPT);
+  })();
+  await throws("something that is not a zip is refused", () => K.readZip(K.fromAscii("this is not an archive")));
+
+  /* --- image headers --- */
+  group("Image headers");
+  (function () {
+    const h = K.parseImageHeader(K.syntheticImage(1024, 0, 2));
+    ok("a valid header parses", h.valid && h.segments === 3 && h.mode === "DIO" && h.size === "4 MB" && h.freq === "80 MHz");
+    ok("chip id is read from the extended header", h.chipId === 0 && h.chip === "ESP32");
+    const s3 = K.parseImageHeader(K.syntheticImage(1024, 9, 2));
+    ok("an S3 image is recognised as an S3 image", s3.chipId === 9 && s3.chip === "ESP32-S3");
+    const fs = K.parseImageHeader(new Uint8Array(1024));
+    ok("a filesystem image is reported as having no header, not as broken", !fs.valid && /0xE9/.test(fs.why));
+  })();
+
+  /* --- install script --- */
+  group("Install script");
+  (function () {
+    const p = K.parseInstallScript(K.SYNTH_SCRIPT, "device-install.sh");
+    eq("every write_flash pair is found", p.writes.map(w => w.offset), [0x00, 0x260000, 0x300000]);
+    eq("filenames come across whole", p.writes.map(w => w.token), ["firmware-diy-v1-2.9.9.bin", "bleota.bin", "littlefs-2.9.9.bin"]);
+    ok("--baud and its value are skipped, not read as an offset", p.writes.length === 3);
+    ok("erase_flash is noticed", p.erase === true);
+  })();
+  (function () {
+    const p = K.parseInstallScript('esptool --baud 115200 --flash_mode dio write_flash 0x10000 "${FILENAME}"');
+    ok("a shell variable is flagged as unresolved rather than guessed at", p.writes.length === 1 && p.writes[0].unresolved === true && p.writes[0].offset === 0x10000);
+  })();
+  (function () {
+    const p = K.parseInstallScript("# write_flash 0x0 decoy.bin\nesptool write_flash 0x1000 real.bin");
+    eq("commented-out lines are ignored", p.writes.map(w => w.token), ["real.bin"]);
+  })();
+  (function () {
+    const p = K.parseInstallScript("esptool.exe --chip esp32 -b 460800 write_flash -z 0x0 fw.bin 0x8000 part.bin");
+    eq("several pairs on one line are all found", p.writes.map(w => [w.offset, w.token]), [[0, "fw.bin"], [0x8000, "part.bin"]]);
+  })();
+
+  /* --- plan --- */
+  group("Write plan");
+  const rel = K.syntheticRelease();
+  const script = K.parseInstallScript(K.SYNTH_SCRIPT);
+  (function () {
+    const plan = K.buildPlan({ entries: rel, writes: script.writes, flashSize: 4 * 1024 * 1024 });
+    eq("regions come out in address order", plan.regions.map(r => r.offset), [0x00, 0x260000, 0x300000]);
+    ok("each region carries the digest we will hold the chip to", plan.regions.every(r => /^[0-9a-f]{32}$/.test(r.md5)));
+    ok("a clean plan can run", plan.canRun === true);
+    eq("total counts only what will be sent", plan.totalBytes, rel[0].data.length + rel[1].data.length + rel[2].data.length);
+  })();
+  (function () {
+    const plan = K.buildPlan({ entries: rel, writes: script.writes, flashSize: 4 * 1024 * 1024, skipFs: true });
+    const fs = plan.regions.find(r => /littlefs/.test(r.name));
+    ok("skipping the filesystem marks it and drops it from the total", fs.skipped === true && plan.totalBytes === rel[0].data.length + rel[1].data.length);
+  })();
+  (function () {
+    const plan = K.buildPlan({ entries: rel, writes: [{ offset: 0x1001, token: "bleota.bin" }], flashSize: 4 * 1024 * 1024 });
+    ok("an offset off the sector boundary stops the run", !plan.canRun && /sector boundary/.test(plan.problems[0].text));
+  })();
+  (function () {
+    const plan = K.buildPlan({ entries: rel, writes: [{ offset: 0x3ff000, token: "firmware-diy-v1-2.9.9.bin" }], flashSize: 4 * 1024 * 1024 });
+    ok("a region running past the end of the chip stops the run", !plan.canRun && /past the end/.test(plan.problems[0].text));
+  })();
+  (function () {
+    const plan = K.buildPlan({ entries: rel, writes: [{ offset: 0, token: "firmware-diy-v1-2.9.9.bin" }, { offset: 0x1000, token: "bleota.bin" }], flashSize: 4 * 1024 * 1024 });
+    ok("overlapping regions stop the run", !plan.canRun && plan.problems.some(p => /overlaps/.test(p.text)));
+  })();
+  (function () {
+    const plan = K.buildPlan({ entries: rel, writes: [{ offset: 0, token: "missing.bin" }], flashSize: 4 * 1024 * 1024 });
+    ok("a file the archive does not contain stops the run", !plan.canRun);
+  })();
+  (function () {
+    const plan = K.buildPlan({ entries: rel, writes: [{ offset: 0, token: "firmware-diy-v1-2.9.8.bin" }], flashSize: 4 * 1024 * 1024 });
+    ok("a version drift between script and filename resolves to the one candidate", plan.regions.length === 1 && plan.canRun);
+  })();
+
+  /* --- the map --- */
+  group("THE MAP");
+  (function () {
+    const plan = K.buildPlan({ entries: rel, writes: script.writes, flashSize: 4 * 1024 * 1024 });
+    const g = K.mapGeometry(plan.regions, plan.flashSize, 900);
+    ok("bands are drawn in address order", g[0].y <= g[1].y && g[1].y <= g[2].y);
+    ok("a small region still gets a visible band", g.every(b => b.h >= K.MAP_MIN_BAND));
+    ok("no band is drawn past the bottom of the chip", g.every(b => b.y + b.h <= 900));
+    plan.regions[0].state = "writing"; plan.regions[0].sent = Math.round(plan.regions[0].size / 4);
+    const half = K.mapGeometry(plan.regions, plan.flashSize, 900);
+    ok("a part-written band is part filled", Math.abs(half[0].fill - 0.25) < 0.01);
+    plan.regions[0].state = "verified";
+    ok("a verified band is full", K.mapGeometry(plan.regions, plan.flashSize, 900)[0].fill === 1);
+    plan.regions[0].state = "failed";
+    ok("a failed band is drawn empty, not full", K.mapGeometry(plan.regions, plan.flashSize, 900)[0].fill === 0);
+  })();
+
+  /* --- end to end --- */
+  group("A whole run against the simulator");
+  const rig = async (faults, size) => {
+    const sim = new K.SimBootloader({ size: size || 4 * 1024 * 1024, faults: faults || {} });
+    const t = new K.SimTransport(sim);
+    const l = new K.Loader(t, { log: () => {} });
+    l.dataTimeout = 400;
+    await l.enterBootloader();
+    return { sim, t, l };
+  };
+  const smallPlan = () => K.buildPlan({
+    entries: [{ name: "firmware-diy-v1-2.9.9.bin", data: K.syntheticImage(9 * 1024, 0, 2) },
+              { name: "bleota.bin", data: K.syntheticImage(3 * 1024, 0, 2) }],
+    writes: [{ offset: 0, token: "firmware-diy-v1-2.9.9.bin" }, { offset: 0x10000, token: "bleota.bin" }],
+    flashSize: 4 * 1024 * 1024,
+  });
+
+  try {
+    const { l } = await rig();
+    const id = await l.identify();
+    ok("the simulator identifies as an ESP32", id.chip.name === "ESP32" && l.statusLen === 2);
+    ok("the MAC comes back in six octets", /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(id.mac || ""));
+    await l.prepareFlash(4 * 1024 * 1024);
+    const plan = smallPlan();
+    for (const r of plan.regions) {
+      await l.writeRegion(r, { compress: true, onProgress: n => { r.sent = n; r.state = "writing"; } });
+      r.chipMd5 = await l.digest(r.offset, r.size);
+      r.state = r.chipMd5 === r.md5 ? "verified" : "failed";
+    }
+    ok("a compressed run lands and every digest matches", plan.regions.every(r => r.state === "verified"));
+  } catch (e) { ok("a compressed run lands and every digest matches", false, e.message); }
+
+  try {
+    const { l } = await rig();
+    await l.identify(); await l.prepareFlash(4 * 1024 * 1024);
+    const plan = smallPlan();
+    await l.writeRegion(plan.regions[0], { compress: false });
+    const d = await l.digest(plan.regions[0].offset, plan.regions[0].size);
+    ok("an uncompressed run lands too, padding and all", d === plan.regions[0].md5, "chip said " + d);
+  } catch (e) { ok("an uncompressed run lands too, padding and all", false, e.message); }
+
+  try {
+    const { l } = await rig({ md5bad: true });
+    await l.identify(); await l.prepareFlash(4 * 1024 * 1024);
+    const plan = smallPlan();
+    const r = plan.regions[0];
+    await l.writeRegion(r, { compress: true });
+    r.chipMd5 = await l.digest(r.offset, r.size);
+    const verdict = r.chipMd5 === r.md5;
+    r.state = verdict ? "verified" : "failed";
+    ok("a mismatched digest is a failure and never a pass", verdict === false && r.state === "failed");
+  } catch (e) { ok("a mismatched digest is a failure and never a pass", false, e.message); }
+
+  try {
+    const { l } = await rig({ badstatus: true });
+    await l.identify(); await l.prepareFlash(4 * 1024 * 1024);
+    const plan = smallPlan();
+    const r = plan.regions[0];
+    let threw = null;
+    try {
+      await l.writeRegion(r, { compress: false, onProgress: n => { r.sent = n; r.state = "writing"; } });
+    } catch (e) { threw = e; }
+    r.state = "failed";
+    const g = K.mapGeometry(plan.regions, plan.flashSize, 900);
+    ok("a refused block stops the run", !!threw && /refused/.test(threw.message), threw && threw.message);
+    ok("the map is left showing exactly how far it got", g[0].state === "failed" && g[1].state === "planned");
+  } catch (e) { ok("a refused block stops the run", false, e.message); }
+
+  try {
+    const { l } = await rig({ stall: true });
+    await l.identify(); await l.prepareFlash(4 * 1024 * 1024);
+    const r = smallPlan().regions[0];
+    let threw = null;
+    try { await l.writeRegion(r, { compress: false }); } catch (e) { threw = e; }
+    ok("a wire that goes quiet times out rather than hanging", threw instanceof K.Timeout, threw ? threw.message : "nothing thrown");
+  } catch (e) { ok("a wire that goes quiet times out rather than hanging", false, e.message); }
+
+  try {
+    const sim = new K.SimBootloader({ faults: { nosync: true } });
+    const l = new K.Loader(new K.SimTransport(sim), { log: () => {} });
+    let threw = null;
+    try { await l.enterBootloader(); } catch (e) { threw = e; }
+    ok("seven unanswered syncs give up and say so", !!threw && /never answered a sync/.test(threw.message));
+    ok("every sync attempt is counted", l.retries === 7, "retries=" + l.retries);
+  } catch (e) { ok("seven unanswered syncs give up and say so", false, e.message); }
+
+  try {
+    const { l } = await rig({ garbage: true });
+    const id = await l.identify();
+    ok("ROM boot chatter between frames does not derail the handshake", id.chip.name === "ESP32");
+  } catch (e) { ok("ROM boot chatter between frames does not derail the handshake", false, e.message); }
+
+  /* --- what the interface must always say --- */
+  if (typeof document !== "undefined") {
+    group("Standing statements");
+    const text = document.body.textContent;
+    ok("the region-unset warning is present on the handoff", /region is unset, and the radio will not transmit/i.test(text));
+    ok("the no-backup position is stated where erase is chosen", /no backup/i.test(text));
+    ok("the ROM-only limit is stated rather than implied", /whole-chip erase/i.test(text) && /stub/i.test(text));
+    ok("the flash size is labelled as declared, not detected", /declared, not detected/i.test(text));
+  }
+
+  const total = passed + failed;
+  lines.unshift("KEEL v" + K.VERSION + " self-test — " + passed + "/" + total + " assertions" + (failed ? "  ·  " + failed + " FAILED" : "  ·  all green"));
+  return { passed, failed, total, lines };
+};
+
+if (typeof module !== "undefined" && module.exports) module.exports = K;
+</script>
+</body>
+</html>
