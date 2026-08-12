@@ -456,7 +456,7 @@ footer{border-top:1px solid var(--rule);margin-top:40px;padding:18px 0;color:var
    ========================================================================== */
 
 const K = {};
-K.VERSION = "1.3.0";
+K.VERSION = "1.4.0";
 K.BUILT = "2026-08-11";
 
 /* ---------- bytes ---------------------------------------------------- */
@@ -993,6 +993,75 @@ K.FALLBACK_LAYOUT = [
   { offset: 0x260000, match: /^bleota\.bin$/i, why: "assumed: BLE OTA helper" },
   { offset: 0x300000, match: /^littlefs-.*\.bin$/i, why: "assumed: filesystem" },
 ];
+
+
+/* ---------- reading a boot log --------------------------------------
+   RadioLib reports failure as a negative code on a line that also contains
+   the word "init", and Meshtastic says "No RF95 radio" rather than "no radio
+   found". Both of those broke the first version of this reader: it missed
+   every failure and then matched "RF95 init" as a success, so a board with
+   no radio on it was told its wiring was fine. Hence a real captured log as
+   the test fixture, and a rule that nothing is called a success unless a
+   result of 0 says so.                                                     */
+
+K.stripAnsi = t => String(t).replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+
+K.RADIOLIB_ERRORS = {
+  "-1": "unknown failure",
+  "-2": "chip not found — nothing answered on SPI",
+  "-3": "memory allocation failed",
+  "-8": "invalid bandwidth",
+  "-9": "invalid spreading factor",
+  "-10": "invalid coding rate",
+  "-12": "invalid frequency for this chip",
+  "-13": "invalid output power",
+  "-16": "SPI command timed out",
+  "-17": "SPI command invalid",
+  "-18": "SPI command failed",
+};
+
+K.readBootLog = function (raw) {
+  const text = K.stripAnsi(raw || "");
+  const out = [];
+  const add = (level, title, body) => out.push({ level, title, body });
+
+  const build = text.match(/S:B:\d+,([0-9][^,\s]*),([^,\s]+)/);
+  if (build) add("info", "Firmware is running", "Version " + build[1] + ", variant " + build[2] + ".");
+
+  const spi = text.match(/SPI\.begin\(SCK=(\d+),\s*MISO=(\d+),\s*MOSI=(\d+),\s*NSS=(\d+)\)/);
+  if (spi) {
+    const got = [spi[1], spi[2], spi[3], spi[4]].map(Number);
+    const want = [5, 19, 27, 18];
+    const same = got.every((v, i) => v === want[i]);
+    add(same ? "info" : "warn", "SPI bus opened on " + got.join(" / "),
+      same ? "SCK 5, MISO 19, MOSI 27, NSS 18 — the diy-v1 pins. This is what the firmware is driving; it says nothing about what is soldered to them."
+           : "That is not the diy-v1 pin set (5 / 19 / 27 / 18). The firmware and your wiring have to agree, and the firmware wins.");
+  }
+
+  // Every radio the firmware tried, and what came back.
+  const attempts = [];
+  const re = /(\w[\w\d]*)\s+init result\s+(-?\d+)/g;
+  let m;
+  while ((m = re.exec(text))) attempts.push({ chip: m[1], code: parseInt(m[2], 10) });
+  const good = attempts.filter(a => a.code === 0);
+  if (good.length) {
+    add("good", good[0].chip + " answered", "A radio initialised. Set the region next.");
+  } else if (attempts.length) {
+    const codes = [...new Set(attempts.map(a => a.code))];
+    const why = codes.map(c => c + " (" + (K.RADIOLIB_ERRORS[String(c)] || "unrecognised RadioLib code") + ")").join(", ");
+    add("stop", "No radio answered — " + attempts.length + " attempt" + (attempts.length > 1 ? "s" : "") + ", all failed",
+      "The firmware tried " + [...new Set(attempts.map(a => a.chip))].join(", ") + " and got " + why +
+      ". On a DIY build this is wiring, not firmware: nothing is responding on the SPI bus. If no module is fitted yet, this is exactly the expected log.");
+  }
+
+  if (/using UNSET|region=UNSET/.test(text))
+    add("warn", "Region is UNSET", "The radio will not transmit until a region is set. Set it in WATCHFIRE, and match it to the module you fitted.");
+
+  if (/No I2C devices found/.test(text))
+    add("info", "No I2C devices", "No OLED or keyboard on SDA 21 / SCL 22. Normal if none is fitted.");
+
+  return out;
+};
 
 /* ---------- the plan --------------------------------------------------- */
 
@@ -2128,7 +2197,7 @@ K.FAULTS = [
     if (S.transport.setBaud && S.transport.baud !== 115200) { try { await S.transport.setBaud(115200); } catch (e) {} }
     S.monitoring = true; S.bootText = "";
     S.transport.onData = bytes => {
-      S.bootText += K.ascii(bytes).replace(/\r/g, "");
+      S.bootText += K.stripAnsi(K.ascii(bytes).replace(/\r/g, ""));
       if (S.bootText.length > 40000) S.bootText = S.bootText.slice(-40000);
       $("bootlog").textContent = S.bootText;
       $("bootlog").scrollTop = $("bootlog").scrollHeight;
@@ -2144,15 +2213,11 @@ K.FAULTS = [
   });
 
   function readBoot(text) {
-    const found = [];
-    if (/no radio|radio not found|Failed to find|LoRa radio init failed|SX12.*fail/i.test(text))
-      found.push(["stop", "The firmware cannot find a radio", "On a DIY build this is the expected first failure and it means wiring, not firmware. Check SCK 5, MOSI 27, MISO 19, CS 18, RESET 23, and that the module has 3.3 V."]);
-    if (/Radio init.*OK|RF95 init|SX126[128].*(ok|success)|Starting meshtastic/i.test(text))
-      found.push(["good", "The radio answered", "The SPI wiring is right. Set the region next."]);
-    if (/region.*(unset|not set)|Setting region|LoRa region/i.test(text))
-      found.push(["warn", "Region", "Set it in WATCHFIRE before expecting traffic. Match it to the module you soldered on."]);
-    $("boot-findings").innerHTML = found.map(([k, h, b]) =>
-      `<div class="card ${k === "stop" ? "stop" : k === "good" ? "good" : "warn"}"><h4>${esc(h)}</h4><p class="small" style="margin:0;color:var(--dim)">${esc(b)}</p></div>`).join("");
+    const found = K.readBootLog(text);
+    $("boot-findings").innerHTML = found.map(f => {
+      const cls = f.level === "stop" ? "stop" : f.level === "good" ? "good" : f.level === "warn" ? "warn" : "";
+      return `<div class="card ${cls}"><h4>${esc(f.title)}</h4><p class="small" style="margin:0;color:var(--dim)">${esc(f.body)}</p></div>`;
+    }).join("");
   }
 
   /* ---------- 08 simulator ---------------------------------------------- */
@@ -2279,6 +2344,22 @@ K.VEC = {
     ["12345678901234567890123456789012345678901234567890123456789012345678901234567890", "57edf4a22be3c955ac49da2e2107b67a"],
   ],
 };
+
+
+/* A real captured boot log from an ESP32 running meshtastic-diy-v1 2.7.26 with
+   no LoRa module fitted. Kept verbatim, ANSI escapes and all, because the
+   first boot reader passed its own invented examples and then misread this. */
+K.VEC.bootLogNoRadio = [
+  "\u001b[32mINFO  \u001b[0m| ??:??:?? 0 \u001b[32mS:B:39,2.7.26.54e0d8d,meshtastic-diy-v1,meshtastic/firmware",
+  "\u001b[0m\u001b[32mINFO  \u001b[0m| ??:??:?? 0 \u001b[32mNo I2C devices found",
+  "\u001b[0m\u001b[34mDEBUG \u001b[0m| ??:??:?? 0 \u001b[34mSPI.begin(SCK=5, MISO=19, MOSI=27, NSS=18)",
+  "\u001b[0m\u001b[32mINFO  \u001b[0m| ??:??:?? 0 \u001b[32mWanted region 0, using UNSET",
+  "\u001b[0m\u001b[34mDEBUG \u001b[0m| ??:??:?? 0 \u001b[34mRF95Interface(cs=18, irq=26, rst=23, busy=33)",
+  "\u001b[0m\u001b[32mINFO  \u001b[0m| ??:??:?? 0 \u001b[32mRF95 init result -2",
+  "\u001b[0m\u001b[33mWARN  \u001b[0m| ??:??:?? 0 \u001b[33mNo RF95 radio",
+  "\u001b[0m\u001b[32mINFO  \u001b[0m| ??:??:?? 11 \u001b[32mSX126x init result -2",
+  "\u001b[0m\u001b[33mWARN  \u001b[0m| ??:??:?? 11 \u001b[33mNo SX1262 radio with TCXO, Vref 1.800000V",
+].join("\r\n");
 
 /* ---------- the self-test ---------------------------------------------- */
 
@@ -2614,6 +2695,37 @@ K.selfTest = async function () {
     const id = await l.identify();
     ok("ROM boot chatter between frames does not derail the handshake", id.chip.name === "ESP32");
   } catch (e) { ok("ROM boot chatter between frames does not derail the handshake", false, e.message); }
+
+
+  /* --- boot log --- */
+  group("Boot log");
+  (function () {
+    const f = K.readBootLog(K.VEC.bootLogNoRadio);
+    const t = f.map(x => x.title).join(" | ");
+    ok("a radio that never answered is reported as a failure", f.some(x => x.level === "stop" && /No radio answered/.test(x.title)), t);
+    ok("and is NOT reported as a success", !f.some(x => x.level === "good"), t);
+    ok("every attempt is counted, not just the first", f.some(x => /2 attempts/.test(x.title)), t);
+    ok("RadioLib -2 is decoded, not shown raw", f.some(x => /chip not found/.test(x.body)));
+    ok("the firmware version and variant are read out", f.some(x => /2\.7\.26/.test(x.body) && /diy-v1/.test(x.body)));
+    ok("the diy-v1 SPI pins are recognised as correct", f.some(x => /SPI bus opened on 5 \/ 19 \/ 27 \/ 18/.test(x.title) && x.level === "info"));
+    ok("an unset region is flagged", f.some(x => x.level === "warn" && /Region is UNSET/.test(x.title)));
+    ok("ANSI escapes are stripped before anything is matched", !/\u001b/.test(K.stripAnsi(K.VEC.bootLogNoRadio)));
+  })();
+  (function () {
+    const f = K.readBootLog("SX126x init result 0\nSet radio: region=US");
+    ok("a result of 0 is the only thing that counts as a radio answering", f.some(x => x.level === "good" && /SX126x answered/.test(x.title)));
+    ok("a working radio is not also warned about", !f.some(x => x.level === "stop"));
+  })();
+  (function () {
+    const f = K.readBootLog("SPI.begin(SCK=18, MISO=19, MOSI=23, NSS=5)");
+    ok("the wrong SPI pins are called out", f.some(x => x.level === "warn" && /not the diy-v1 pin set/.test(x.body)));
+  })();
+  (function () {
+    const f = K.readBootLog("RF95 init result -16");
+    ok("an SPI timeout reads differently from a missing chip", f.some(x => /SPI command timed out/.test(x.body)));
+    const g = K.readBootLog("RF95 init result -999");
+    ok("a code we do not know is admitted as unknown, not guessed", g.some(x => /unrecognised RadioLib code/.test(x.body)));
+  })();
 
   /* --- what the interface must always say --- */
   if (typeof document !== "undefined") {

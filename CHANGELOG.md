@@ -2,6 +2,26 @@
 
 All notable changes to KEEL. Versions are the single-file `keel.html`.
 
+## v1.4.0 — 2026-08-11
+
+### Fixed
+- **The boot-log reader called a dead radio a working one.** Meshtastic writes
+  "No RF95 radio", not "no radio found", so every failure pattern missed — and
+  the success pattern matched the substring "RF95 init" inside the line
+  `RF95 init result -2`. A board with nothing soldered to it would have been
+  told its SPI wiring was fine. Rewritten around RadioLib result codes: nothing
+  is a success unless a result of `0` says so, every attempted interface is
+  counted, and the code is decoded (`-2` chip not found, `-16` SPI timeout, and
+  the rest), with unknown codes admitted as unknown.
+- ANSI escape sequences are stripped before matching and before display, so the
+  log is readable and the patterns see the text rather than the colour codes.
+
+### Added
+- The reader now reports firmware version and variant from the `S:B:` line, and
+  checks the SPI pins the firmware actually opened against the diy-v1 set.
+- A real captured boot log — ESP32, `meshtastic-diy-v1` 2.7.26, no module
+  fitted — is now a test fixture, escapes and all. 95 assertions.
+
 ## v1.3.0 — 2026-08-11
 
 ### Added
