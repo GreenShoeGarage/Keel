@@ -455,7 +455,7 @@ footer{border-top:1px solid var(--rule);margin-top:40px;padding:18px 0;color:var
    ========================================================================== */
 
 const K = {};
-K.VERSION = "1.0.0";
+K.VERSION = "1.1.0";
 K.BUILT = "2026-08-11";
 
 /* ---------- bytes ---------------------------------------------------- */
@@ -950,7 +950,7 @@ K.parseInstallScript = function (text, filename) {
         writes.push({
           offset: pending,
           token: t,
-          unresolved: /[$%{}*]/.test(t),
+          unresolved: K.looksLikeVariable(t),
           line: line.trim(),
           n: n + 1,
         });
@@ -960,6 +960,28 @@ K.parseInstallScript = function (text, filename) {
     }
   });
   return { source: filename || "(unnamed)", erase, writes, notes, lines: lines.length };
+};
+
+/* Shell and batch variables, in every syntax the release scripts actually use:
+   $NAME, ${NAME}, %NAME% (cmd), !NAME! (cmd with delayed expansion), and any
+   glob. Recognising these is a convenience, not the safety net — an unmatched
+   token gets a file picker either way. */
+K.looksLikeVariable = t => /[$%{}*?]/.test(t) || /![^!\s]+!/.test(t);
+
+/* One place decides which archive entry a script token refers to, so station
+   03 and the plan builder can never disagree about it. */
+K.resolveEntry = function (token, entries, bound) {
+  const pick = n => entries.find(e => e.name.split("/").pop() === String(n).split("/").pop()) || null;
+  if (bound) return pick(bound);
+  if (K.looksLikeVariable(token)) return null;
+  const direct = pick(token);
+  if (direct) return direct;
+  // Tolerate version drift between the script and the filenames it names.
+  const base = String(token).split("/").pop();
+  const stem = base.replace(/-?\d[\d.]*\w*\.bin$/i, "");
+  if (!stem || stem === base) return null;
+  const cands = entries.filter(e => /\.bin$/i.test(e.name) && e.name.split("/").pop().startsWith(stem));
+  return cands.length === 1 ? cands[0] : null;
 };
 
 /* Used only when the archive carries no script. Shown in the interface as an
@@ -980,22 +1002,17 @@ K.buildPlan = function (opts) {
   const writes = opts.writes || [];
   const flashSize = opts.flashSize || 4 * 1024 * 1024;
   const skipFs = !!opts.skipFs;
-  const byName = new Map(entries.map(e => [e.name.split("/").pop(), e]));
   const regions = [];
   const problems = [];
 
   for (const w of writes) {
-    const base = String(w.token).split("/").pop();
-    let entry = byName.get(base) || null;
-    if (!entry && w.bound) entry = byName.get(String(w.bound).split("/").pop()) || null;
-    if (!entry && !w.unresolved) {
-      // Tolerate version drift between script and filenames: match on shape.
-      const stem = base.replace(/-?\d[\d.]*\w*\.bin$/i, "");
-      const cands = entries.filter(e => e.name.endsWith(".bin") && e.name.split("/").pop().startsWith(stem));
-      if (cands.length === 1) entry = cands[0];
-    }
+    const entry = w.entry || K.resolveEntry(w.token, entries, w.bound);
     if (!entry) {
-      problems.push({ level: w.unresolved ? "bind" : "stop", text: "no file in the archive for " + w.token + " at " + K.addr(w.offset), token: w.token, offset: w.offset });
+      problems.push({
+        level: "bind",
+        text: "the write at " + K.addr(w.offset) + " names " + w.token + ", which is not a file in this archive — choose the file it means in station 03",
+        token: w.token, offset: w.offset,
+      });
       continue;
     }
     const skipped = skipFs && K.isFilesystem(entry.name);
@@ -1034,7 +1051,8 @@ K.buildPlan = function (opts) {
     problems,
     flashSize,
     totalBytes: live.reduce((n, r) => n + r.size, 0),
-    canRun: regions.length > 0 && !problems.some(p => p.level === "stop"),
+    pendingBinds: problems.filter(p => p.level === "bind").length,
+    canRun: regions.length > 0 && problems.length === 0,
   };
 };
 
@@ -1682,7 +1700,8 @@ K.FAULTS = [
       || S.entries.find(e => /\.(sh|bat)$/i.test(e.name));
     if (cand) {
       S.scriptSource = cand.name;
-      S.script = K.parseInstallScript(K.ascii(cand.data), cand.name);
+      S.scriptText = K.ascii(cand.data);
+      S.script = K.parseInstallScript(S.scriptText, cand.name);
       if (!S.script.writes.length) S.script = null;
     } else {
       S.script = null; S.scriptSource = null;
@@ -1699,14 +1718,13 @@ K.FAULTS = [
   }
 
   function currentWrites() {
-    if (S.script) {
-      return S.script.writes.map(w => {
-        if (!w.unresolved) return w;
-        const bound = (S.binds || {})[w.n + ":" + w.token];
-        return Object.assign({}, w, { bound, unresolved: !bound });
-      });
-    }
-    return fallbackWrites();
+    const raw = S.script ? S.script.writes : fallbackWrites();
+    return raw.map(w => {
+      const key = (w.n || 0) + ":" + w.token;
+      const bound = (S.binds || {})[key];
+      const entry = K.resolveEntry(w.token, S.entries, bound);
+      return Object.assign({}, w, { key, bound, entry, needsBind: !entry });
+    });
   }
 
   function renderImage() {
@@ -1717,19 +1735,27 @@ K.FAULTS = [
 
     const c = $("script-card");
     if (S.script) {
-      const rows = S.script.writes.map(w => {
-        const bindable = w.unresolved
-          ? `<select data-bind="${w.n}:${esc(w.token)}"><option value="">— pick the file —</option>` +
-            S.entries.filter(e => /\.bin$/i.test(e.name)).map(e => `<option>${esc(e.name)}</option>`).join("") + "</select>"
-          : esc(w.token);
-        return `<tr><td>${K.addr(w.offset)}</td><td>${bindable}</td><td class="muted">line ${w.n}: ${esc(w.line)}</td></tr>`;
+      const writes = currentWrites();
+      const pending = writes.filter(w => w.needsBind).length;
+      const bins = S.entries.filter(e => /\.bin$/i.test(e.name));
+      const rows = writes.map(w => {
+        const cell = w.needsBind
+          ? `<select data-bind="${esc(w.key)}"><option value="">— which file? —</option>` +
+            bins.map(e => `<option${w.bound === e.name ? " selected" : ""}>${esc(e.name)}</option>`).join("") + "</select>"
+          : `${esc(w.entry.name)}${w.bound || w.entry.name !== w.token ? ' <span class="tag">you chose this</span>' : ""}`;
+        return `<tr><td>${K.addr(w.offset)}</td><td>${cell}</td><td class="muted">line ${w.n}: <code>${esc(w.token)}</code></td></tr>`;
       }).join("");
-      c.innerHTML = `<p class="small" style="margin:0 0 10px">Offsets below come from <code>${esc(S.scriptSource)}</code> inside your archive, not from anything hard-coded in KEEL.</p>
-        <table><thead><tr><th>Offset</th><th>File</th><th>As written in the script</th></tr></thead><tbody>${rows}</tbody></table>
-        ${S.script.erase ? '<p class="small" style="margin:10px 0 0;color:var(--ember)">The script also asks for a whole-chip erase. The ROM loader cannot do that, so KEEL will not — see station 04.</p>' : ""}`;
+      c.className = pending ? "card warn" : "card";
+      c.innerHTML = `<p class="small" style="margin:0 0 10px">Offsets come from <code>${esc(S.scriptSource)}</code> inside your archive, not from anything hard-coded in KEEL.</p>
+        ${pending ? `<p class="small" style="margin:0 0 10px;color:var(--ember)"><b>${pending} write${pending > 1 ? "s name a file" : " names a file"} KEEL cannot match to anything in this archive.</b> Scripts pass the firmware in as an argument and name it with a variable, so this is expected on the first pass — pick the file each one means. KEEL will not guess this for you.</p>` : ""}
+        <table><thead><tr><th>Offset</th><th>File to write</th><th>As the script names it</th></tr></thead><tbody>${rows}</tbody></table>
+        ${S.script.erase ? '<p class="small" style="margin:10px 0 0;color:var(--ember)">The script also asks for a whole-chip erase. The ROM loader cannot do that, so KEEL will not — see station 04.</p>' : ""}
+        <details style="margin-top:12px"><summary class="small muted" style="cursor:pointer">Show the script exactly as it is in the archive</summary>
+          <div class="log" style="height:200px;margin-top:8px">${esc(S.scriptText || "")}</div></details>`;
       c.querySelectorAll("select[data-bind]").forEach(sel => sel.addEventListener("change", () => {
         S.binds = S.binds || {};
         S.binds[sel.dataset.bind] = sel.value;
+        renderImage();
         refreshPlan();
       }));
     } else {
@@ -1798,7 +1824,7 @@ K.FAULTS = [
   });
 
   function refreshPlan() {
-    const writes = currentWrites().filter(w => !w.unresolved);
+    const writes = currentWrites();
     if (!S.entries.length || !writes.length) {
       $("plan-empty").classList.remove("hidden");
       $("plan-out").classList.add("hidden");
@@ -1838,7 +1864,10 @@ K.FAULTS = [
     if (probs.length || extra) {
       $("plan-approve").className = "card stop";
       $("plan-approve").innerHTML = `<h4>Not ready to write</h4><ul class="small" style="margin:0;padding-left:18px;color:var(--dim)">${
-        probs.map(p => `<li>${esc(p.text)}</li>`).join("")}${extra ? `<li>${esc(extra)}</li>` : ""}</ul>`;
+        probs.map(p => `<li>${esc(p.text)}</li>`).join("")}${extra ? `<li>${esc(extra)}</li>` : ""}</ul>
+        ${S.plan.pendingBinds ? '<button class="act" id="btn-go-bind" style="margin-top:12px">Open station 03 and choose the files</button>' : ""}`;
+      const gb = $("btn-go-bind");
+      if (gb) gb.addEventListener("click", () => showStation("image"));
     } else {
       $("plan-approve").className = "card";
       $("plan-approve").innerHTML = `<label class="check"><input type="checkbox" id="ack-plan"> I have read the plan above and the regions listed are the regions I want overwritten.</label>
@@ -2315,6 +2344,7 @@ K.selfTest = async function () {
 
   /* --- install script --- */
   group("Install script");
+  const rel0 = K.syntheticRelease();
   (function () {
     const p = K.parseInstallScript(K.SYNTH_SCRIPT, "device-install.sh");
     eq("every write_flash pair is found", p.writes.map(w => w.offset), [0x00, 0x260000, 0x300000]);
@@ -2325,6 +2355,29 @@ K.selfTest = async function () {
   (function () {
     const p = K.parseInstallScript('esptool --baud 115200 --flash_mode dio write_flash 0x10000 "${FILENAME}"');
     ok("a shell variable is flagged as unresolved rather than guessed at", p.writes.length === 1 && p.writes[0].unresolved === true && p.writes[0].offset === 0x10000);
+  })();
+  (function () {
+    const bat = [
+      "@echo off",
+      "setlocal enabledelayedexpansion",
+      "set FILENAME=",
+      "%PYTHON% -m esptool --baud 115200 erase_flash",
+      "%PYTHON% -m esptool --baud 115200 write_flash 0x00 !FILENAME!",
+      "%PYTHON% -m esptool --baud 115200 write_flash 0x260000 bleota.bin",
+    ].join("\r\n");
+    const p = K.parseInstallScript(bat, "device-install.bat");
+    eq("a .bat with CRLF line endings parses", p.writes.map(w => w.offset), [0x00, 0x260000]);
+    ok("cmd delayed expansion !NAME! is seen as a variable", p.writes[0].unresolved === true);
+    ok("%NAME% is seen as a variable too", K.looksLikeVariable("%FILENAME%") && K.looksLikeVariable("${F}") && K.looksLikeVariable("$F"));
+    ok("an ordinary filename is not mistaken for a variable", !K.looksLikeVariable("bleota.bin"));
+  })();
+  (function () {
+    // The point of the picker: an unmatched name must be survivable, not fatal.
+    const plan = K.buildPlan({ entries: rel0, writes: [{ offset: 0, token: "!FILENAME!" }], flashSize: 4 * 1024 * 1024 });
+    ok("an unmatched name asks to be bound rather than stopping dead", !plan.canRun && plan.pendingBinds === 1 && plan.problems[0].level === "bind");
+    const bound = K.buildPlan({ entries: rel0, writes: [{ offset: 0, token: "!FILENAME!", bound: "firmware-diy-v1-2.9.9.bin" }], flashSize: 4 * 1024 * 1024 });
+    ok("once bound, the same write plans normally", bound.canRun && bound.regions[0].name === "firmware-diy-v1-2.9.9.bin");
+    ok("a bound file the archive does not have is still refused", !K.buildPlan({ entries: rel0, writes: [{ offset: 0, token: "x", bound: "nope.bin" }], flashSize: 4194304 }).canRun);
   })();
   (function () {
     const p = K.parseInstallScript("# write_flash 0x0 decoy.bin\nesptool write_flash 0x1000 real.bin");

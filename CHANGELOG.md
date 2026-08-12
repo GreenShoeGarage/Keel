@@ -2,6 +2,33 @@
 
 All notable changes to KEEL. Versions are the single-file `keel.html`.
 
+## v1.1.0 — 2026-08-11
+
+Found on first contact with a real Meshtastic release archive on Windows.
+
+### Fixed
+- **Any write naming a file that is not in the archive now gets a file picker.**
+  Previously only tokens matching a known variable syntax were bindable and
+  everything else was a hard stop with no way forward. From the operator's side
+  "this is a variable" and "I cannot find this file" are the same situation, and
+  only one of them was survivable. The parser recognising a syntax is now a
+  convenience, not the safety net.
+- Recognise cmd.exe delayed expansion (`!NAME!`) alongside `$NAME`, `${NAME}`
+  and `%NAME%`. `device-install.bat` uses it and KEEL was reading `!FILENAME!`
+  as a literal filename.
+- One function, `K.resolveEntry`, now decides which archive entry a script token
+  means, so station 03 and the plan builder cannot disagree about it.
+
+### Added
+- Station 03 states plainly that scripts pass the firmware in as an argument, so
+  a pick is expected on the first pass rather than a sign of something wrong.
+- The install script is viewable verbatim in station 03, under the parsed table.
+- Station 04 links back to station 03 when a pick is outstanding.
+- Bound files are marked "you chose this" so an operator decision is never
+  mistaken later for something the script said.
+- Three more assertions: cmd variable syntaxes, a CRLF `.bat`, and the full
+  bind path from unmatched name to verified write. 82 total.
+
 ## v1.0.0 — 2026-08-11
 
 First build. Review stop.
