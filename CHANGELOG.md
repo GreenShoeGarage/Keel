@@ -2,6 +2,26 @@
 
 All notable changes to KEEL. Versions are the single-file `keel.html`.
 
+## v1.6.0 — 2026-08-11
+
+### Added
+- **Ask the radio directly, from the bootloader.** The ROM will read and write
+  any register, and the GPIO matrix is just registers — so station 02 can
+  bit-bang SPI over the serial wire and read the SX127x version register with no
+  firmware running on the chip. Seconds instead of a flash-and-boot cycle, and
+  it distinguishes the failures that look identical from a boot log: a floating
+  MISO, a MISO tied low, and something on the bus answering wrongly.
+- A pass requires the version register to read exactly `0x12`. An SX126x status
+  byte that is neither all-ones nor all-zeros is reported as suggestive and
+  explicitly not a pass. The probe reports its own round-trip count and the pins
+  it drove.
+- The simulator now models the GPIO matrix and an SX1276 on the bus, with faults
+  for an absent module and a grounded MISO. 121 assertions.
+
+### Known
+- The probe has not been run against a real radio. It is written so that it can
+  only report success on a definite positive.
+
 ## v1.5.0 — 2026-08-11
 
 ### Added

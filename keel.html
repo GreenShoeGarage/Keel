@@ -260,6 +260,14 @@ footer{border-top:1px solid var(--rule);margin-top:40px;padding:18px 0;color:var
   <h3>Worth getting right</h3>
   <div class="grid2" id="wiring-notes"></div>
 
+  <h3>Ask the radio directly</h3>
+  <div class="card">
+    <p class="small" style="margin:0 0 10px;color:var(--dim)">The ROM bootloader will read and write any register, and the GPIO matrix is just registers — so KEEL can bit-bang SPI over the serial wire and ask the radio to identify itself, with no firmware running on the chip. It is slow (one round trip per clock edge) and it answers in seconds instead of a flash-and-boot cycle.</p>
+    <p class="small" style="margin:0 0 12px;color:var(--ember)">A pass here means one thing only: the SX127x version register read back exactly 0x12. Anything else is reported as what it saw. This probe has not yet been run against a real radio.</p>
+    <button class="act primary" id="btn-probe">Probe the SPI bus</button>
+    <div id="probe-out" style="margin-top:12px"></div>
+  </div>
+
   <h3>Pre-flight</h3>
   <div class="card" id="preflight"></div>
   <p class="small muted">These are checks you make, not checks KEEL makes. Nothing here is verified by this program — ticking a box records that you looked.</p>
@@ -462,7 +470,7 @@ footer{border-top:1px solid var(--rule);margin-top:40px;padding:18px 0;color:var
    ========================================================================== */
 
 const K = {};
-K.VERSION = "1.5.0";
+K.VERSION = "1.6.0";
 K.BUILT = "2026-08-11";
 
 /* ---------- bytes ---------------------------------------------------- */
@@ -1245,6 +1253,8 @@ K.PREFLIGHT = [
 ];
 
 K.FAULTS = [
+  ["noModule", "No radio on the SPI bus (probe)"],
+  ["misoLow", "MISO tied low (probe)"],
   ["nosync", "Board never answers a sync"],
   ["garbage", "ROM boot text between frames"],
   ["badstatus", "Bootloader refuses the third data block"],
@@ -1252,6 +1262,139 @@ K.FAULTS = [
   ["drop", "Wire dies mid-write"],
   ["md5bad", "Chip reports a digest that does not match"],
 ];
+
+/* ============================================================================
+   Probing the SPI bus from the ROM bootloader.
+
+   The bootloader will read and write any register, and the GPIO matrix is just
+   registers, so SPI can be bit-banged over the serial wire with no firmware on
+   the chip at all. Slow — one round trip per edge — but it answers the only
+   question that matters after a -2: is the radio there and wired right?
+
+   NOT YET RUN AGAINST A REAL RADIO. Written so that it can only report success
+   on a definite positive (SX127x RegVersion reading exactly 0x12); anything
+   else is reported as what it saw, never as a pass.
+   ========================================================================== */
+
+K.GPIO = {
+  OUT_W1TS: 0x3ff44008, OUT_W1TC: 0x3ff4400c,
+  ENABLE_W1TS: 0x3ff44024, ENABLE_W1TC: 0x3ff44028,
+  IN: 0x3ff4403c,
+};
+
+/* IO_MUX register per GPIO, base 0x3FF49000. Offsets are by pad, not by number. */
+K.IOMUX_BASE = 0x3ff49000;
+K.IOMUX_OFF = {
+  0: 0x44, 1: 0x88, 2: 0x40, 3: 0x84, 4: 0x48, 5: 0x6c, 12: 0x34, 13: 0x38,
+  14: 0x30, 15: 0x3c, 16: 0x4c, 17: 0x50, 18: 0x70, 19: 0x74, 21: 0x7c,
+  22: 0x80, 23: 0x8c, 25: 0x24, 26: 0x28, 27: 0x2c, 32: 0x1c, 33: 0x20,
+};
+/* MCU_SEL = 2 (the GPIO function on every pad we touch), FUN_DRV = 2, FUN_IE on. */
+K.IOMUX_GPIO_IN = (2 << 12) | (2 << 10) | (1 << 9);
+
+K.PROBE_PINS = { sck: 5, mosi: 27, miso: 19, cs: 18, rst: 23 };
+
+K.SpiBitBang = class {
+  constructor(loader, pins) {
+    this.l = loader;
+    this.p = pins || K.PROBE_PINS;
+    this.reads = 0; this.writes = 0;
+  }
+  async _w(addr, val) { this.writes++; await this.l.command(K.CMD.WRITE_REG, K.packU32(addr, val >>> 0, 0xffffffff, 0), 0, 3000); }
+  async _r(addr) { this.reads++; const r = await this.l.command(K.CMD.READ_REG, K.packU32(addr), 0, 3000); return r.value >>> 0; }
+  async _mux(pin) { await this._w(K.IOMUX_BASE + K.IOMUX_OFF[pin], K.IOMUX_GPIO_IN); }
+  async _set(pin, high) { await this._w(high ? K.GPIO.OUT_W1TS : K.GPIO.OUT_W1TC, 1 << pin); }
+  async _get(pin) { return ((await this._r(K.GPIO.IN)) >>> pin) & 1; }
+
+  async setup() {
+    for (const pin of [this.p.sck, this.p.mosi, this.p.miso, this.p.cs, this.p.rst]) await this._mux(pin);
+    // outputs on everything except MISO
+    let mask = 0;
+    for (const pin of [this.p.sck, this.p.mosi, this.p.cs, this.p.rst]) mask |= 1 << pin;
+    await this._w(K.GPIO.ENABLE_W1TC, 1 << this.p.miso);
+    await this._w(K.GPIO.ENABLE_W1TS, mask);
+    await this._set(this.p.cs, 1);
+    await this._set(this.p.sck, 0);
+    await this._set(this.p.rst, 0);
+    await K.sleep(20);
+    await this._set(this.p.rst, 1);   // release the radio from reset
+    await K.sleep(20);
+  }
+
+  /* MISO with CS high and nothing driving it tells us whether the line is
+     floating high, tied low, or shorted — useful before any transfer. */
+  async idleLevel() { return this._get(this.p.miso); }
+
+  async xfer(bytesOut, bytesIn) {
+    const got = [];
+    await this._set(this.p.cs, 0);
+    for (const b of bytesOut) {
+      for (let i = 7; i >= 0; i--) {
+        await this._set(this.p.mosi, (b >> i) & 1);
+        await this._set(this.p.sck, 1);
+        await this._set(this.p.sck, 0);
+      }
+    }
+    for (let n = 0; n < bytesIn; n++) {
+      let v = 0;
+      for (let i = 7; i >= 0; i--) {
+        await this._set(this.p.sck, 1);
+        v = (v << 1) | (await this._get(this.p.miso));
+        await this._set(this.p.sck, 0);
+      }
+      got.push(v);
+    }
+    await this._set(this.p.cs, 1);
+    return got;
+  }
+};
+
+K.SX127X_VERSION = 0x12;
+
+K.probeRadio = async function (loader, opts = {}) {
+  const step = opts.onStep || (() => {});
+  const spi = new K.SpiBitBang(loader, opts.pins);
+  const findings = [];
+  const add = (level, title, body) => findings.push({ level, title, body });
+
+  step("Claiming the pins from the bootloader");
+  await spi.setup();
+
+  step("Looking at MISO with the bus idle");
+  const idle = await spi.idleLevel();
+
+  step("Reading SX127x RegVersion (0x42)");
+  const v127 = (await spi.xfer([0x42], 1))[0];
+
+  step("Reading SX126x status (GetStatus)");
+  const st126 = (await spi.xfer([0xc0], 1))[0];
+
+  if (v127 === K.SX127X_VERSION) {
+    add("good", "An SX1276/77/78 answered",
+      "RegVersion read back 0x12, which is the value that chip is supposed to return. The SPI wiring is right and the radio is alive. If Meshtastic still reports no radio after this, the problem is elsewhere.");
+  } else if (st126 !== 0x00 && st126 !== 0xff) {
+    add("warn", "Something answered, and it is not an SX127x",
+      "RegVersion read 0x" + v127.toString(16).padStart(2, "0") + " rather than 0x12, but the SX126x status byte came back 0x" +
+      st126.toString(16).padStart(2, "0") + ", which is neither all-ones nor all-zeros. That is consistent with an SX1262 or SX1268 being present, but it is weaker evidence than the SX127x check and KEEL will not call it a pass.");
+  } else if (v127 === 0xff && st126 === 0xff) {
+    add("stop", "MISO is stuck high — nothing is driving the bus",
+      "Every bit read back as 1, which is what an unconnected input with a pull-up looks like. Either nothing is wired to MISO (D19), the module has no power, or CS (D18) is not reaching it so the radio never talks.");
+  } else if (v127 === 0x00 && st126 === 0x00) {
+    add("stop", "MISO is stuck low — the line is held down",
+      "Every bit read back as 0. That is a MISO line tied to ground, a module with no 3.3 V on it, or MISO and MOSI swapped so the radio is listening on the wire we are reading.");
+  } else {
+    add("stop", "Something is on the bus but it is not answering correctly",
+      "RegVersion read 0x" + v127.toString(16).padStart(2, "0") + " and the SX126x status read 0x" + st126.toString(16).padStart(2, "0") +
+      ". Neither matches a known-good answer. Suspect a swapped MISO/MOSI pair, a marginal SCK lead, or a module held in reset.");
+  }
+
+  add("info", "What the probe did",
+    "Idle MISO read " + idle + ". " + spi.writes + " register writes and " + spi.reads +
+    " reads over the serial wire, bit-banging SPI on SCK " + spi.p.sck + ", MOSI " + spi.p.mosi +
+    ", MISO " + spi.p.miso + ", CS " + spi.p.cs + ", RST " + spi.p.rst + ". No firmware ran on the chip.");
+
+  return { findings, version: v127, status126: st126, idle };
+};
 /* ============================================================================
    Section 3 — talking to the thing. One driver, two wires: a real serial port
    and a synthetic bootloader that answers the same commands.
@@ -1323,6 +1466,60 @@ K.SerialTransport = class {
 
 /* ---------- synthetic bootloader --------------------------------------- */
 
+
+/* The GPIO matrix plus whatever is soldered to it. Models an SX1276 answering
+   on SPI so the bit-banger can be driven end to end with nothing plugged in. */
+K.SimGpio = class {
+  constructor(faults) {
+    this.faults = faults || {};
+    this.out = 0; this.enable = 0;
+    this.p = K.PROBE_PINS;
+    this.lastSck = 0;
+    this.shiftIn = 0; this.bits = 0; this.cmd = null;
+    this.shiftOut = 0; this.outBits = 0; this.miso = 1;
+    this.regs = { 0x42: K.SX127X_VERSION };
+  }
+  write(addr, val) {
+    if (addr === K.GPIO.OUT_W1TS) this.out |= val;
+    else if (addr === K.GPIO.OUT_W1TC) this.out &= ~val;
+    else if (addr === K.GPIO.ENABLE_W1TS) this.enable |= val;
+    else if (addr === K.GPIO.ENABLE_W1TC) this.enable &= ~val;
+    else return;
+    this._tick();
+  }
+  _bit(pin) { return (this.out >>> pin) & 1; }
+  _tick() {
+    const cs = this._bit(this.p.cs), sck = this._bit(this.p.sck);
+    if (cs) { this.bits = 0; this.cmd = null; this.outBits = 0; this.lastSck = sck; return; }
+    if (sck && !this.lastSck) {
+      // rising edge: the slave samples MOSI
+      if (this.cmd === null) {
+        this.shiftIn = ((this.shiftIn << 1) | this._bit(this.p.mosi)) & 0xff;
+        if (++this.bits === 8) {
+          this.cmd = this.shiftIn;
+          const val = this.cmd === 0xc0 ? 0x2a : (this.regs[this.cmd & 0x7f] ?? 0x00);
+          this.shiftOut = val; this.outBits = 8;
+        }
+      }
+    } else if (!sck && this.lastSck) {
+      // falling edge: the slave presents the next bit, which the master then
+      // samples on the following rising edge. SPI mode 0.
+      if (this.cmd !== null && this.outBits > 0) {
+        this.miso = (this.shiftOut >> (this.outBits - 1)) & 1;
+        this.outBits--;
+      }
+    }
+    this.lastSck = sck;
+  }
+  read() {
+    if (this.faults.noModule) return 0xffffffff;          // floating high
+    if (this.faults.misoLow) return 0;                     // tied down
+    let v = this.out & ~(1 << this.p.miso);
+    if (this.miso) v |= 1 << this.p.miso;
+    return v >>> 0;
+  }
+};
+
 K.SimBootloader = class {
   constructor(opts = {}) {
     this.size = opts.size || 4 * 1024 * 1024;
@@ -1332,6 +1529,7 @@ K.SimBootloader = class {
     this.reset();
   }
   reset() {
+    this.gpio = new K.SimGpio(this.faults);
     this.inBoot = false;
     this.dead = false;
     this.blocks = 0;
@@ -1372,7 +1570,13 @@ K.SimBootloader = class {
       if (addr === K.CHIP_MAGIC_REG) v = 0x00f01d83;
       else if (addr === K.EFUSE_MAC_REG) v = 0x5a2b0c11;
       else if (addr === K.EFUSE_MAC_REG + 4) v = 0x0000a4cf;
+      else if (addr === K.GPIO.IN) v = this.gpio.read();
       this._reply(cmd, v);
+      return;
+    }
+    if (cmd === C.WRITE_REG) {
+      this.gpio.write(K.u32(data, 0), K.u32(data, 4));
+      this._reply(cmd);
       return;
     }
     if (cmd === C.SPI_ATTACH || cmd === C.SPI_SET_PARAMS || cmd === C.CHANGE_BAUDRATE) { this._reply(cmd); return; }
@@ -1810,6 +2014,29 @@ K.Loader = class {
     $("preflight").innerHTML = K.PREFLIGHT
       .map((t, i) => `<label class="check"><input type="checkbox" data-pf="${i}"> ${esc(t)}</label>`).join("");
   })();
+
+  /* ---------- 02 probe -------------------------------------------------- */
+
+  $("btn-probe").addEventListener("click", async () => {
+    if (!S.loader || !S.connected) {
+      $("probe-out").innerHTML = `<div class="card warn"><h4>Nothing is connected</h4><p class="small" style="margin:0;color:var(--dim)">The probe drives the pins from the ROM bootloader, so connect in station 01 first. If Meshtastic is running, the probe will reset the board into the bootloader and the radio stays unconfigured until you reset it back.</p></div>`;
+      return;
+    }
+    $("btn-probe").disabled = true;
+    $("probe-out").innerHTML = `<div class="card"><p class="small" style="margin:0" id="probe-step">Starting…</p></div>`;
+    laneTarget = "lane-wire";
+    try {
+      const res = await K.probeRadio(S.loader, { onStep: t => { const el = $("probe-step"); if (el) el.textContent = t + "…"; } });
+      $("probe-out").innerHTML = res.findings.map(f => {
+        const cls = f.level === "stop" ? "stop" : f.level === "good" ? "good" : f.level === "warn" ? "warn" : "";
+        return `<div class="card ${cls}"><h4>${esc(f.title)}</h4><p class="small" style="margin:0;color:var(--dim)">${esc(f.body)}</p></div>`;
+      }).join("");
+    } catch (e) {
+      $("probe-out").innerHTML = `<div class="card stop"><h4>The probe could not run</h4><p class="small" style="margin:0">${esc(e.message)}</p></div>`;
+    } finally {
+      $("btn-probe").disabled = false;
+    }
+  });
 
   /* ---------- 03 image -------------------------------------------------- */
 
@@ -2841,6 +3068,40 @@ K.selfTest = async function () {
     ok("an SPI timeout reads differently from a missing chip", f.some(x => /SPI command timed out/.test(x.body)));
     const g = K.readBootLog("RF95 init result -999");
     ok("a code we do not know is admitted as unknown, not guessed", g.some(x => /unrecognised RadioLib code/.test(x.body)));
+  })();
+
+
+  /* --- the SPI probe --- */
+  group("SPI probe from the bootloader");
+  const probeRig = async faults => {
+    const sim = new K.SimBootloader({ faults: faults || {} });
+    const l = new K.Loader(new K.SimTransport(sim), { log: () => {} });
+    l.dataTimeout = 400;
+    await l.enterBootloader();
+    return l;
+  };
+  try {
+    const l = await probeRig();
+    const r = await K.probeRadio(l);
+    ok("a simulated SX1276 is read correctly", r.version === K.SX127X_VERSION, "read 0x" + r.version.toString(16));
+    ok("and is reported as a pass", r.findings.some(f => f.level === "good" && /SX1276/.test(f.title)));
+    ok("the probe says what it actually did", r.findings.some(f => /register writes and/.test(f.body)));
+  } catch (e) { ok("a simulated SX1276 is read correctly", false, e.message); }
+  try {
+    const r = await K.probeRadio(await probeRig({ noModule: true }));
+    ok("a floating bus is called stuck high, not a pass", r.version === 0xff && r.findings.some(f => f.level === "stop" && /stuck high/.test(f.title)));
+    ok("nothing is reported as good when nothing answered", !r.findings.some(f => f.level === "good"));
+  } catch (e) { ok("a floating bus is called stuck high, not a pass", false, e.message); }
+  try {
+    const r = await K.probeRadio(await probeRig({ misoLow: true }));
+    ok("a grounded MISO is called stuck low", r.version === 0x00 && r.findings.some(f => f.level === "stop" && /stuck low/.test(f.title)));
+  } catch (e) { ok("a grounded MISO is called stuck low", false, e.message); }
+  (function () {
+    ok("every probe pin has an IO_MUX offset", Object.values(K.PROBE_PINS).every(p => K.IOMUX_OFF[p] !== undefined));
+    ok("the probe drives the pins the variant names",
+      K.PROBE_PINS.sck === 5 && K.PROBE_PINS.miso === 19 && K.PROBE_PINS.mosi === 27 && K.PROBE_PINS.cs === 18 && K.PROBE_PINS.rst === 23);
+    ok("the IO_MUX word selects the GPIO function with input enabled",
+      ((K.IOMUX_GPIO_IN >> 12) & 7) === 2 && ((K.IOMUX_GPIO_IN >> 9) & 1) === 1);
   })();
 
   /* --- what the interface must always say --- */
