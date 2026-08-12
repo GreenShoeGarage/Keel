@@ -455,7 +455,7 @@ footer{border-top:1px solid var(--rule);margin-top:40px;padding:18px 0;color:var
    ========================================================================== */
 
 const K = {};
-K.VERSION = "1.1.0";
+K.VERSION = "1.2.0";
 K.BUILT = "2026-08-11";
 
 /* ---------- bytes ---------------------------------------------------- */
@@ -966,6 +966,7 @@ K.parseInstallScript = function (text, filename) {
    $NAME, ${NAME}, %NAME% (cmd), !NAME! (cmd with delayed expansion), and any
    glob. Recognising these is a convenience, not the safety net — an unmatched
    token gets a file picker either way. */
+K.SKIP = "__keel_write_nothing__";
 K.looksLikeVariable = t => /[$%{}*?]/.test(t) || /![^!\s]+!/.test(t);
 
 /* One place decides which archive entry a script token refers to, so station
@@ -1722,6 +1723,7 @@ K.FAULTS = [
     return raw.map(w => {
       const key = (w.n || 0) + ":" + w.token;
       const bound = (S.binds || {})[key];
+      if (bound === K.SKIP) return Object.assign({}, w, { key, bound, entry: null, skipWrite: true, needsBind: false });
       const entry = K.resolveEntry(w.token, S.entries, bound);
       return Object.assign({}, w, { key, bound, entry, needsBind: !entry });
     });
@@ -1739,10 +1741,16 @@ K.FAULTS = [
       const pending = writes.filter(w => w.needsBind).length;
       const bins = S.entries.filter(e => /\.bin$/i.test(e.name));
       const rows = writes.map(w => {
-        const cell = w.needsBind
-          ? `<select data-bind="${esc(w.key)}"><option value="">— which file? —</option>` +
-            bins.map(e => `<option${w.bound === e.name ? " selected" : ""}>${esc(e.name)}</option>`).join("") + "</select>"
-          : `${esc(w.entry.name)}${w.bound || w.entry.name !== w.token ? ' <span class="tag">you chose this</span>' : ""}`;
+        const picker = sel => `<select data-bind="${esc(w.key)}">
+            <option value=""${sel === "" ? " selected" : ""}>— which file? —</option>
+            ${bins.map(e => `<option${w.bound === e.name ? " selected" : ""}>${esc(e.name)}</option>`).join("")}
+            <option value="${K.SKIP}"${w.bound === K.SKIP ? " selected" : ""}>— write nothing here —</option>
+          </select>`;
+        const cell = w.skipWrite
+          ? picker(K.SKIP) + ' <span class="tag">skipped</span>'
+          : w.needsBind
+            ? picker("")
+            : picker(w.entry.name) + (w.bound ? ' <span class="tag">you chose this</span>' : "");
         return `<tr><td>${K.addr(w.offset)}</td><td>${cell}</td><td class="muted">line ${w.n}: <code>${esc(w.token)}</code></td></tr>`;
       }).join("");
       c.className = pending ? "card warn" : "card";
@@ -1824,7 +1832,8 @@ K.FAULTS = [
   });
 
   function refreshPlan() {
-    const writes = currentWrites();
+    const writes = currentWrites().filter(w => !w.skipWrite);
+    const skipped = currentWrites().filter(w => w.skipWrite);
     if (!S.entries.length || !writes.length) {
       $("plan-empty").classList.remove("hidden");
       $("plan-out").classList.add("hidden");
@@ -1846,6 +1855,11 @@ K.FAULTS = [
     $("flashsize-note").innerHTML = `<b>Flash size is declared, not detected.</b> KEEL does not read the SPI flash ID — on the ROM loader that means driving the SPI peripheral by hand, and a guessed size is worse than an honest one. It is used for the map, the bounds check, and the parameters handed to the bootloader.
       ${declared ? ` The firmware image declares <b>${esc(declared)}</b>; if that disagrees with what you selected, one of the two is wrong.` : ""}`;
 
+    const skipNote = skipped.length
+      ? `<div class="card warn small skip-note" style="margin-top:14px"><b>${skipped.length} write${skipped.length > 1 ? "s" : ""} from the script will not run</b><br>${
+          skipped.map(w => `${K.addr(w.offset)} — <code>${esc(w.token)}</code> — you chose to write nothing here`).join("<br>")
+        }<br><span class="muted">That is your decision, not the script's. It is recorded in the run record.</span></div>`
+      : "";
     const rows = S.plan.regions.map(r => `<tr>
         <td${r.assumed ? ' class="assume"' : ""}>${K.addr(r.offset)}</td>
         <td>${esc(r.name)}${r.skipped ? ' <span class="tag">skipped</span>' : ""}</td>
@@ -1857,6 +1871,8 @@ K.FAULTS = [
       </tr>`).join("");
     $("plan-table").innerHTML = `<thead><tr><th>Offset</th><th>File</th><th>Size</th><th>Ends</th><th>Sent as</th><th>Region</th><th>MD5 we expect</th></tr></thead><tbody>${rows}</tbody>
       <tfoot><tr><td colspan="2" class="muted">${S.plan.regions.filter(r => !r.skipped).length} regions</td><td class="n">${K.bytesHuman(S.plan.totalBytes)}</td><td colspan="4" class="muted">${S.plan.compress ? "compressed with " + K.deflateMethod() : "sent byte for byte"}</td></tr></tfoot>`;
+    document.querySelectorAll(".skip-note").forEach(n => n.remove());
+    if (skipNote) $("plan-table").insertAdjacentHTML("afterend", skipNote);
 
     const probs = S.plan.problems;
     let extra = "";
@@ -1943,7 +1959,7 @@ K.FAULTS = [
     };
     const timer = setInterval(tick, 200);
 
-    S.run = { started: new Date().toISOString(), regions: [], chip: S.chip.name, mac: S.mac, flashSize: S.plan.flashSize, compressed: S.plan.compress, ok: false };
+    S.run = { started: new Date().toISOString(), skippedWrites: currentWrites().filter(w => w.skipWrite).map(w => ({ offset: K.addr(w.offset), token: w.token })), regions: [], chip: S.chip.name, mac: S.mac, flashSize: S.plan.flashSize, compressed: S.plan.compress, ok: false };
 
     try {
       await S.loader.prepareFlash(S.plan.flashSize);
