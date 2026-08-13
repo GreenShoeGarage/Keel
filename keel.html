@@ -474,7 +474,7 @@ footer{border-top:1px solid var(--rule);margin-top:40px;padding:18px 0;color:var
    ========================================================================== */
 
 const K = {};
-K.VERSION = "2.0.0";
+K.VERSION = "2.1.0";
 K.BUILT = "2026-08-11";
 
 /* ---------- bytes ---------------------------------------------------- */
@@ -909,16 +909,16 @@ K.CHIP_MAGIC_REG = 0x40001000;
    register; the S3 and everything after report a chip id through
    GET_SECURITY_INFO instead and have no magic value at all. */
 K.CHIPS = [
-  { name: "ESP32", magic: [0x00f01d83], imageChipId: 0, mac: 0x3ff5a004, extendedFlashParams: false, probe: true, supported: true },
-  { name: "ESP32-S2", magic: [0x000007c6], imageChipId: 2, mac: 0x3f41a004, extendedFlashParams: true, probe: false, supported: false },
-  { name: "ESP32-S3", magic: [], imageChipId: 9, mac: 0x60007044, extendedFlashParams: true, probe: false, supported: true },
-  { name: "ESP32-C3", magic: [0x6921506f, 0x1b31506f, 0x4881606f, 0x4361606f], imageChipId: 5, mac: 0x60008844, extendedFlashParams: true, probe: false, supported: false },
-  { name: "ESP32-C6", magic: [0x2ce0806f], imageChipId: 13, mac: 0x600b0844, extendedFlashParams: true, probe: false, supported: false },
-  { name: "ESP32-H2", magic: [0xd7b73e80], imageChipId: 16, mac: 0x600b0844, extendedFlashParams: true, probe: false, supported: false },
+  { name: "ESP32", magic: [0x00f01d83], imageChipId: 0, mac: 0x3ff5a004, extendedFlashParams: false, probe: true, supported: true, bootloaderOffset: 0x1000 },
+  { name: "ESP32-S2", bootloaderOffset: 0x1000, magic: [0x000007c6], imageChipId: 2, mac: 0x3f41a004, extendedFlashParams: true, probe: false, supported: false },
+  { name: "ESP32-S3", bootloaderOffset: 0x0, magic: [], imageChipId: 9, mac: 0x60007044, extendedFlashParams: true, probe: false, supported: true },
+  { name: "ESP32-C3", bootloaderOffset: 0x0, magic: [0x6921506f, 0x1b31506f, 0x4881606f, 0x4361606f], imageChipId: 5, mac: 0x60008844, extendedFlashParams: true, probe: false, supported: false },
+  { name: "ESP32-C6", bootloaderOffset: 0x0, magic: [0x2ce0806f], imageChipId: 13, mac: 0x600b0844, extendedFlashParams: true, probe: false, supported: false },
+  { name: "ESP32-H2", bootloaderOffset: 0x0, magic: [0xd7b73e80], imageChipId: 16, mac: 0x600b0844, extendedFlashParams: true, probe: false, supported: false },
 ];
 K.chipByMagic = m => K.CHIPS.find(c => c.magic.includes(m >>> 0)) || null;
 K.chipById = id => K.CHIPS.find(c => c.imageChipId === id) || null;
-K.UNKNOWN_CHIP = { name: "unknown", imageChipId: null, mac: null, extendedFlashParams: true, probe: false, supported: false, magic: [] };
+K.UNKNOWN_CHIP = { name: "unknown", bootloaderOffset: null, imageChipId: null, mac: null, extendedFlashParams: true, probe: false, supported: false, magic: [] };
 
 K.IMAGE_CHIP_NAMES = { 0: "ESP32", 2: "ESP32-S2", 5: "ESP32-C3", 9: "ESP32-S3", 12: "ESP32-C2", 13: "ESP32-C6", 16: "ESP32-H2" };
 K.ESPRESSIF_VID = 0x303a;
@@ -1085,7 +1085,7 @@ K.RADIOLIB_ERRORS = {
 /* The ROM prints a fixed banner on every reset, so a capture can hold several
    boots. Summing attempts across them makes one board look like it tried
    fifteen times when it tried seven, twice. */
-K.BOOT_BANNER = /(?=ets\s+\w+\s+\d+\s+\d{4})/gi;
+K.BOOT_BANNER = /(?=ets\s+\w+\s+\d+\s+\d{4}|ESP-ROM:esp32)/gi;
 K.BOOT_BANNER_ALT = /(?=rst:0x[0-9a-f]+\s*\()/gi;
 
 /* One boot prints the ROM date line AND a rst: line, so splitting on either
@@ -1130,6 +1130,26 @@ K.readBootLog = function (raw) {
       "The board has reset " + (boots.length - 1) + " time" + (boots.length > 2 ? "s" : "") + " while you were watching" +
       (dominant !== undefined ? ", most recently " + (K.RESET_REASONS[dominant] || ["an unknown reason"])[0] : "") +
       ". Everything below is read from the most recent boot only. A board that keeps resetting is its own problem, separate from anything it reports.");
+
+  /* The ROM's own complaint, which arrives before any firmware can speak. */
+  const bad = whole.match(/invalid header:\s*0x([0-9a-f]{8})/i);
+  if (bad) {
+    const rom = whole.match(/ESP-ROM:(esp32\w*)-/i);
+    const chipName = rom ? rom[1].replace(/^esp32s(\d)$/i, "ESP32-S$1").replace(/^esp32c(\d)$/i, "ESP32-C$1").replace(/^esp32$/i, "ESP32") : null;
+    const erased = /^f+$/i.test(bad[1]);
+    add("stop", "The ROM found no bootloader — " + (erased ? "that address is erased" : "the header there is not an image"),
+      "The chip read " + (chipName ? "its bootloader address" : "the bootloader address") + " and got 0x" + bad[1] + ". " +
+      (erased
+        ? "All ones is erased flash: nothing has been written there. On an ESP32-S3 the bootloader address is 0x0; on the classic ESP32 it is 0x1000. An image written at the classic offset leaves an S3's 0x0 erased and produces exactly this."
+        : "Whatever is at that address does not begin with the 0xE9 image magic.") +
+      (chipName ? " The ROM banner says this is an " + chipName + ", so check you flashed the matching architecture archive and that the plan writes to that chip's bootloader address." : ""));
+    const rr = whole.match(/rst:0x([0-9a-f]+)\s*\(/i);
+    if (rr) {
+      const info = K.RESET_REASONS[parseInt(rr[1], 16)];
+      if (info) add("info", "Reset reason: " + info[0], info[1] + ". A chip with no bootloader to run resets on its watchdog, so this follows from the line above rather than being a separate fault.");
+    }
+    return out;
+  }
 
   const build = text.match(/S:B:\d+,([0-9][^,\s]*),([^,\s]+)/);
   if (build) add("info", "Firmware is running", "Version " + build[1] + ", variant " + build[2] + ".");
@@ -1228,6 +1248,23 @@ K.buildPlan = function (opts) {
     const prev = live[i - 1], cur = live[i];
     if (prev.offset + prev.size > cur.offset)
       problems.push({ level: "stop", text: prev.name + " overlaps " + cur.name + " at " + K.addr(cur.offset) });
+  }
+
+  /* The ROM reads its bootloader from a fixed address that differs by chip —
+     0x1000 on the classic ESP32, 0x0 on the S3 and everything after it. A plan
+     that writes nothing there leaves erased flash at the one address the chip
+     cares about, and the board prints "invalid header: 0xffffffff" forever. */
+  if (opts.chip && opts.chip.bootloaderOffset !== null && opts.chip.bootloaderOffset !== undefined && live.length) {
+    const bo = opts.chip.bootloaderOffset;
+    const covering = live.find(r => r.offset <= bo && r.offset + r.size > bo);
+    if (!covering) {
+      problems.push({ level: "stop", text: "nothing in this plan writes to " + K.addr(bo) + ", which is where the " + opts.chip.name + " reads its bootloader from. The board will find erased flash there and loop on \"invalid header: 0xffffffff\"." });
+    } else if (covering.offset === bo && covering.header && !covering.header.valid) {
+      problems.push({ level: "stop", text: covering.name + " starts at " + K.addr(bo) + " but has no 0xE9 image header, so the " + opts.chip.name + " will not boot it." });
+    }
+    const wrongChip = live.filter(r => r.header && r.header.valid && opts.chip.imageChipId !== null && r.header.chipId !== opts.chip.imageChipId);
+    for (const r of wrongChip)
+      problems.push({ level: "stop", text: r.name + " is built for " + r.header.chip + " and the chip on the wire is " + opts.chip.name });
   }
 
   return {
@@ -2503,7 +2540,7 @@ K.Loader = class {
     renderManual();
 
     const flashSize = parseInt($("flashsize").value, 10);
-    S.plan = K.buildPlan({ entries: S.entries, writes, flashSize, skipFs: $("skip-fs").checked });
+    S.plan = K.buildPlan({ entries: S.entries, writes, flashSize, skipFs: $("skip-fs").checked, chip: S.chip });
     S.plan.compress = $("compress").value === "1";
 
     const declared = (() => {
@@ -3391,6 +3428,47 @@ K.selfTest = async function () {
     const id = await l.identify();
     ok("a classic ESP32 still identifies by magic after all this", id.chip.name === "ESP32" && /magic value/.test(id.how));
   } catch (e) { ok("a classic ESP32 still identifies by magic after all this", false, e.message); }
+
+
+  /* --- the bootloader address --- */
+  group("Where each chip reads its bootloader");
+  (function () {
+    ok("the classic ESP32 boots from 0x1000 and the S3 from 0x0",
+      K.CHIPS.find(c => c.name === "ESP32").bootloaderOffset === 0x1000 &&
+      K.CHIPS.find(c => c.name === "ESP32-S3").bootloaderOffset === 0x0);
+    const s3 = K.CHIPS.find(c => c.name === "ESP32-S3");
+    const entries = [{ name: "firmware-s3-2.9.9.bin", data: K.syntheticImage(64 * 1024, 9, 3) }];
+    const atZero = K.buildPlan({ entries, writes: [{ offset: 0, token: "firmware-s3-2.9.9.bin" }], flashSize: 8388608, chip: s3 });
+    ok("an S3 image at 0x0 plans cleanly", atZero.canRun, atZero.problems.map(p => p.text).join(" | "));
+    const at1000 = K.buildPlan({ entries, writes: [{ offset: 0x1000, token: "firmware-s3-2.9.9.bin" }], flashSize: 8388608, chip: s3 });
+    ok("the same image at the ESP32 offset is refused before it is written",
+      !at1000.canRun && at1000.problems.some(p => /reads its bootloader from/.test(p.text)), at1000.problems.map(p => p.text).join(" | "));
+    const esp32 = K.CHIPS.find(c => c.name === "ESP32");
+    const classicOk = K.buildPlan({
+      entries: [{ name: "firmware-diy-v1-2.9.9.bin", data: K.syntheticImage(64 * 1024, 0, 2) }],
+      writes: [{ offset: 0, token: "firmware-diy-v1-2.9.9.bin" }], flashSize: 4194304, chip: esp32,
+    });
+    ok("a classic ESP32 image written from 0x0 still covers 0x1000 and passes", classicOk.canRun);
+    const wrongChip = K.buildPlan({ entries, writes: [{ offset: 0, token: "firmware-s3-2.9.9.bin" }], flashSize: 4194304, chip: esp32 });
+    ok("an S3 image aimed at a classic ESP32 is refused", !wrongChip.canRun && wrongChip.problems.some(p => /built for ESP32-S3/.test(p.text)));
+    ok("with no chip identified yet, the plan does not invent a bootloader rule",
+      K.buildPlan({ entries, writes: [{ offset: 0x1000, token: "firmware-s3-2.9.9.bin" }], flashSize: 8388608 }).canRun);
+  })();
+  (function () {
+    const log = "invalid header: 0xffffffff\rinvalid header: 0xffffffff\rESP-ROM:esp32s3-20210327\rBuild:Mar 27 2021\rrst:0x7 (TG0WDT_SYS_RST),boot:0x8 (SPI_FAST_FLASH_BOOT)\rSaved PC:0x40049b21\rinvalid header: 0xffffffff";
+    const f = K.readBootLog(log);
+    const t = f.map(x => x.title).join(" | ");
+    ok("an all-ones header is read as erased flash, not as a corrupt image", f.some(x => x.level === "stop" && /that address is erased/.test(x.title)), t);
+    ok("the S3 is named from its ROM banner", f.some(x => /ESP32-S3/.test(x.body)));
+    ok("the 0x0 versus 0x1000 difference is spelled out", f.some(x => /0x0/.test(x.body) && /0x1000/.test(x.body)));
+    ok("the watchdog reset is explained as a consequence, not a separate fault", f.some(x => /follows from the line above/.test(x.body)));
+    ok("no radio or region finding is invented from a log with neither", !f.some(x => /radio|region/i.test(x.title)));
+  })();
+  (function () {
+    const f = K.readBootLog("invalid header: 0x12345678\rESP-ROM:esp32s3-20210327");
+    ok("a header that is present but wrong reads differently from an erased one",
+      f.some(x => /not an image/.test(x.title)) && !f.some(x => /erased/.test(x.title)));
+  })();
 
   /* --- the SPI probe --- */
   group("SPI probe from the bootloader");
