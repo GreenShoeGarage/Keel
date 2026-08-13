@@ -13,13 +13,14 @@ WATCHFIRE sails it.
 
 ## What it is for
 
-One job: an ESP-WROOM-32 devkit — the 30-pin CP2102 or CH340 class of board —
+Main job: an ESP-WROOM-32 devkit — the 30-pin CP2102 or CH340 class of board —
 with a bare SPI LoRa module wired to it, being turned into a Meshtastic node
 for the first time. That is the hardware the stock `diy-v1` variant targets.
 
-It is not a general-purpose `esptool` port and does not try to be. It knows one
-chip family, one bootloader, and one shape of release archive, and it keeps a
-record of what it did.
+The ESP32-S3 is supported for flashing as well. It is not a general-purpose
+`esptool` port and does not try to be: it knows one bootloader and one shape of
+release archive, and it keeps a record of what it did. The wiring reference and
+the SPI probe are classic-ESP32 and `diy-v1` only.
 
 ## Running it
 
@@ -105,9 +106,14 @@ A headless harness (jsdom) runs the same `K.selfTest()` against the same file.
 
 ## Protocol notes worth keeping
 
-- Status bytes are **two** on the ESP32 ROM and four on every chip after it.
-  Read that wrong and every failure parses as a success. The parser refuses
-  frames too short to carry a status rather than guessing.
+- Status bytes are two wide and sit immediately **after** the response data,
+  not at the end of the frame. Every ROM after the ESP8266 appends two reserved
+  bytes behind them, so reading from the end lands on the reserved pair — which
+  is zero — and a refused command parses as a success. Each command declares its
+  expected data length and the status is located from the front.
+- The ESP32-S3 and later have no chip magic value; they are identified by chip
+  id through `GET_SECURITY_INFO`. Every ROM after the classic ESP32 also wants a
+  fifth `FLASH_BEGIN` parameter and refuses the write without it.
 - The checksum is `0xEF`-seeded and applies only to `MEM_DATA`, `FLASH_DATA`
   and `FLASH_DEFL_DATA`.
 - On the ROM loader, the size field of `FLASH_DEFL_BEGIN` is the *erase* size

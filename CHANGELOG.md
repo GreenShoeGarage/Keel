@@ -2,6 +2,48 @@
 
 All notable changes to KEEL. Versions are the single-file `keel.html`.
 
+## v2.0.0 — 2026-08-11
+
+ESP32-S3 support, and a defect it exposed in the ESP32 support.
+
+### Fixed
+- **The status bytes were read from the wrong end of the frame.** They sit two
+  bytes wide immediately after whatever response data a command returns, not at
+  the end — and every ROM after the ESP8266 appends two reserved bytes behind
+  them. Reading from the end lands on the reserved pair, which is always zero,
+  so **a refused command parsed as a success**. Position is now taken from the
+  front with the expected data length declared per command, which makes the
+  question of how many bytes trail it irrelevant on every chip at once. This was
+  read out of esptool's source rather than remembered.
+- The assertion that was supposed to catch this checked a proxy — that the
+  payload length looked wrong — instead of checking that a failure was reported
+  as a failure. It passed while the bug was live. Replaced with assertions that
+  test the actual claim, including a simulator that now appends the reserved
+  bytes exactly as real ROMs do.
+- The digest reply is validated as 32 hexadecimal characters rather than
+  accepted on length alone.
+
+### Added
+- **ESP32-S3.** Identified through `GET_SECURITY_INFO` — the S3 and later have
+  no magic value at all — with its own eFuse MAC register, and the fifth
+  `FLASH_BEGIN` parameter that every ROM after the classic ESP32 requires and
+  refuses the write without.
+- A chip table carrying, per chip: magic values, image chip id, MAC register,
+  whether the extended begin parameters apply, and whether KEEL knows its GPIO
+  map well enough to probe. The S2, C3, C6 and H2 are identified and named as
+  unsupported rather than misread as something else.
+- "Board is already in its bootloader — skip the reset dance" in station 01, for
+  clones with no auto-reset circuit and for chips whose native USB carries no
+  DTR or RTS at all. A port on Espressif's own USB VID is called out as such.
+- The SPI probe refuses any chip whose register map KEEL does not carry, rather
+  than writing guessed addresses to whatever lives there.
+
+### Known
+- Station 02's wiring reference is the classic ESP32 and the `diy-v1` variant.
+  S3 DIY builds use different pins and KEEL does not carry them.
+- No S3 hardware has been touched. 150 assertions, including a full compressed
+  write and digest verification against a simulated S3.
+
 ## v1.8.0 — 2026-08-11
 
 ### Fixed

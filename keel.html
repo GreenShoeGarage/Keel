@@ -201,6 +201,10 @@ footer{border-top:1px solid var(--rule);margin-top:40px;padding:18px 0;color:var
         </select>
       </div>
       <div>
+        <label class="f">&nbsp;</label>
+        <label class="check" style="margin:0 0 9px"><input type="checkbox" id="skip-reset"> Board is already in its bootloader — skip the reset dance</label>
+      </div>
+      <div>
         <button class="act primary" id="btn-connect">Connect and identify</button>
         <button class="act" id="btn-disconnect" disabled>Release port</button>
       </div>
@@ -470,7 +474,7 @@ footer{border-top:1px solid var(--rule);margin-top:40px;padding:18px 0;color:var
    ========================================================================== */
 
 const K = {};
-K.VERSION = "1.8.0";
+K.VERSION = "2.0.0";
 K.BUILT = "2026-08-11";
 
 /* ---------- bytes ---------------------------------------------------- */
@@ -832,7 +836,7 @@ K.CMD = {
   FLASH_BEGIN: 0x02, FLASH_DATA: 0x03, FLASH_END: 0x04,
   MEM_BEGIN: 0x05, MEM_END: 0x06, MEM_DATA: 0x07,
   SYNC: 0x08, WRITE_REG: 0x09, READ_REG: 0x0a,
-  SPI_SET_PARAMS: 0x0b, SPI_ATTACH: 0x0d, CHANGE_BAUDRATE: 0x0f,
+  SPI_SET_PARAMS: 0x0b, SPI_ATTACH: 0x0d, CHANGE_BAUDRATE: 0x0f, GET_SECURITY_INFO: 0x14,
   FLASH_DEFL_BEGIN: 0x10, FLASH_DEFL_DATA: 0x11, FLASH_DEFL_END: 0x12,
   SPI_FLASH_MD5: 0x13,
 };
@@ -856,21 +860,31 @@ K.buildCommand = function (cmd, data = new Uint8Array(0), chk = 0) {
   return K.concat(head, data);
 };
 
-/* statusLen is 2 on the ESP32 ROM and 4 on every chip after it. Reading it
-   wrong makes a failure parse as a success, which is the one mistake a
-   flasher cannot survive, so the parser refuses short frames outright. */
-K.parseResponse = function (frame, statusLen) {
-  if (frame.length < 8 + statusLen) throw new Error("response frame is " + frame.length + " bytes, too short to carry a status");
+/* Where the status lives, read out of esptool rather than remembered.
+
+   The status is TWO bytes positioned immediately after whatever response data
+   the command returns — not at the end of the frame. Chips after the ESP8266
+   append two more reserved bytes, which are ignored. Reading the status off the
+   END of the frame therefore lands on the reserved bytes on any chip that sends
+   them, and reserved bytes are zero, so a REFUSED COMMAND PARSES AS SUCCESS.
+   That was the bug here through v1.8.0, and it is the single worst thing a
+   flasher can get wrong. Position it from the front and the question of how
+   many bytes trail it stops mattering on every chip at once.                */
+
+K.parseResponse = function (frame, respDataLen) {
+  const want = (respDataLen | 0);
+  if (frame.length < 8 + want + 2) throw new Error("response frame is " + frame.length + " bytes, too short to carry " + want + " bytes of data and a status");
   if (frame[0] !== 0x01) throw new Error("response direction byte is 0x" + frame[0].toString(16) + ", expected 0x01");
-  const cmd = frame[1];
-  const size = K.u16(frame, 2);
-  const value = K.u32(frame, 4);
   const body = frame.subarray(8);
-  const status = body.subarray(body.length - statusLen);
-  const payload = body.subarray(0, body.length - statusLen);
+  const payload = body.subarray(0, want);
+  const status = body.subarray(want, want + 2);
   return {
-    cmd, size, value, payload,
+    cmd: frame[1],
+    size: K.u16(frame, 2),
+    value: K.u32(frame, 4),
+    payload,
     status: Array.from(status),
+    reserved: Array.from(body.subarray(want + 2)),
     ok: status[0] === 0,
     err: status[0] === 0 ? 0 : status[1],
   };
@@ -889,19 +903,30 @@ K.ROM_ERRORS = {
 /* ---------- chips ------------------------------------------------------ */
 
 K.CHIP_MAGIC_REG = 0x40001000;
-K.CHIPS = {
-  0x00f01d83: { name: "ESP32", statusLen: 2, imageChipId: 0, supported: true },
-  0x000007c6: { name: "ESP32-S2", statusLen: 4, imageChipId: 2, supported: false },
-  0x09: { name: "ESP32-S3", statusLen: 4, imageChipId: 9, supported: false },
-  0x6921506f: { name: "ESP32-C3", statusLen: 4, imageChipId: 5, supported: false },
-  0x1b31506f: { name: "ESP32-C3", statusLen: 4, imageChipId: 5, supported: false },
-  0x4881606f: { name: "ESP32-C3", statusLen: 4, imageChipId: 5, supported: false },
-  0x4361606f: { name: "ESP32-C3", statusLen: 4, imageChipId: 5, supported: false },
-  0x2ce0806f: { name: "ESP32-C6", statusLen: 4, imageChipId: 13, supported: false },
-  0xd7b73e80: { name: "ESP32-H2", statusLen: 4, imageChipId: 16, supported: false },
-};
+
+/* Two ways to identify a chip, because Espressif changed the answer partway
+   along. ESP8266 / ESP32 / ESP32-S2 are recognised by a magic value in a
+   register; the S3 and everything after report a chip id through
+   GET_SECURITY_INFO instead and have no magic value at all. */
+K.CHIPS = [
+  { name: "ESP32", magic: [0x00f01d83], imageChipId: 0, mac: 0x3ff5a004, extendedFlashParams: false, probe: true, supported: true },
+  { name: "ESP32-S2", magic: [0x000007c6], imageChipId: 2, mac: 0x3f41a004, extendedFlashParams: true, probe: false, supported: false },
+  { name: "ESP32-S3", magic: [], imageChipId: 9, mac: 0x60007044, extendedFlashParams: true, probe: false, supported: true },
+  { name: "ESP32-C3", magic: [0x6921506f, 0x1b31506f, 0x4881606f, 0x4361606f], imageChipId: 5, mac: 0x60008844, extendedFlashParams: true, probe: false, supported: false },
+  { name: "ESP32-C6", magic: [0x2ce0806f], imageChipId: 13, mac: 0x600b0844, extendedFlashParams: true, probe: false, supported: false },
+  { name: "ESP32-H2", magic: [0xd7b73e80], imageChipId: 16, mac: 0x600b0844, extendedFlashParams: true, probe: false, supported: false },
+];
+K.chipByMagic = m => K.CHIPS.find(c => c.magic.includes(m >>> 0)) || null;
+K.chipById = id => K.CHIPS.find(c => c.imageChipId === id) || null;
+K.UNKNOWN_CHIP = { name: "unknown", imageChipId: null, mac: null, extendedFlashParams: true, probe: false, supported: false, magic: [] };
+
 K.IMAGE_CHIP_NAMES = { 0: "ESP32", 2: "ESP32-S2", 5: "ESP32-C3", 9: "ESP32-S3", 12: "ESP32-C2", 13: "ESP32-C6", 16: "ESP32-H2" };
-K.EFUSE_MAC_REG = 0x3ff5a000 + 0x04;
+K.ESPRESSIF_VID = 0x303a;
+
+/* GET_SECURITY_INFO response: 32-bit flags, one byte flash_crypt_cnt, seven
+   key-purpose bytes, then the 32-bit chip id, then the api version. */
+K.SECURITY_INFO_LEN = 20;
+K.SECURITY_INFO_CHIP_ID_OFFSET = 12;
 
 /* ---------- image header ---------------------------------------------- */
 
@@ -1547,6 +1572,10 @@ K.SerialTransport = class {
     const w = this.port.writable.getWriter();
     try { await w.write(bytes); } finally { w.releaseLock(); }
   }
+  isNativeUsb() {
+    if (!this.port || !this.port.getInfo) return false;
+    return (this.port.getInfo() || {}).usbVendorId === K.ESPRESSIF_VID;
+  }
   async setSignals(sig) { await this.port.setSignals(sig); }
   async setBaud(baud) {
     this.stopped = true;
@@ -1638,8 +1667,10 @@ K.SimGpio = class {
 K.SimBootloader = class {
   constructor(opts = {}) {
     this.size = opts.size || 4 * 1024 * 1024;
+    this.chip = opts.chip || K.CHIPS[0];                 // ESP32 classic by default
     this.flash = new Uint8Array(this.size).fill(0xff);
     this.faults = opts.faults || {};
+    this.reserved = opts.reserved !== false;
     this.emit = opts.emit || (() => {});
     this.reset();
   }
@@ -1659,13 +1690,18 @@ K.SimBootloader = class {
     if (this.faults.garbage) this.emit(K.fromAscii("ets Jun  8 2016 00:22:57\r\n"));
     this.emit(K.slipEncode(frame));
   }
+  /* Status is two bytes right after the response data, then two reserved bytes
+     that every ROM after the ESP8266 appends. Modelling the reserved pair is
+     the whole point: a reader that takes its status from the END of the frame
+     reads these instead and calls every failure a success. */
   _reply(cmd, value = 0, payload = new Uint8Array(0), err = 0) {
     const head = new Uint8Array(8);
+    const status = Uint8Array.from(this.reserved === false ? [err ? 1 : 0, err] : [err ? 1 : 0, err, 0, 0]);
+    const size = payload.length + status.length;
     head[0] = 0x01; head[1] = cmd;
-    const size = payload.length + 2;
     head[2] = size & 0xff; head[3] = (size >> 8) & 0xff;
     new DataView(head.buffer).setUint32(4, value >>> 0, true);
-    this._send(K.concat(head, payload, Uint8Array.from([err ? 1 : 0, err])));
+    this._send(K.concat(head, payload, status));
   }
 
   _handle(frame) {
@@ -1674,6 +1710,14 @@ K.SimBootloader = class {
     const data = frame.subarray(8);
     const C = K.CMD;
 
+    if (cmd === C.GET_SECURITY_INFO) {
+      // Only chips without a magic value answer this one.
+      if (this.chip.magic.length) { this._reply(cmd, 0, new Uint8Array(0), 0x05); return; }
+      const p = new Uint8Array(K.SECURITY_INFO_LEN);
+      new DataView(p.buffer).setUint32(K.SECURITY_INFO_CHIP_ID_OFFSET, this.chip.imageChipId, true);
+      this._reply(cmd, 0, p);
+      return;
+    }
     if (cmd === C.SYNC) {
       if (this.faults.nosync) return;
       for (let i = 0; i < 8; i++) this._reply(C.SYNC);
@@ -1682,9 +1726,9 @@ K.SimBootloader = class {
     if (cmd === C.READ_REG) {
       const addr = K.u32(data, 0);
       let v = 0;
-      if (addr === K.CHIP_MAGIC_REG) v = 0x00f01d83;
-      else if (addr === K.EFUSE_MAC_REG) v = 0x5a2b0c11;
-      else if (addr === K.EFUSE_MAC_REG + 4) v = 0x0000a4cf;
+      if (addr === K.CHIP_MAGIC_REG) v = this.chip.magic.length ? this.chip.magic[0] : 0;
+      else if (this.chip.mac && addr === this.chip.mac) v = 0x5a2b0c11;
+      else if (this.chip.mac && addr === this.chip.mac + 4) v = 0x0000a4cf;
       else if (addr === K.GPIO.IN) v = this.gpio.read();
       this._reply(cmd, v);
       return;
@@ -1698,6 +1742,8 @@ K.SimBootloader = class {
 
     if (cmd === C.FLASH_BEGIN || cmd === C.FLASH_DEFL_BEGIN) {
       const declared = K.u32(data, 0), blocks = K.u32(data, 4), bs = K.u32(data, 8), off = K.u32(data, 12);
+      const wantExtended = this.chip.extendedFlashParams;
+      if (wantExtended !== (data.length >= 20)) { this._reply(cmd, 0, new Uint8Array(0), 0x05); return; }
       this.cur = { off, declared, blocks, bs, defl: cmd === C.FLASH_DEFL_BEGIN, written: 0 };
       this.comp = [];
       const end = Math.min(this.size, off + declared);
@@ -1771,7 +1817,7 @@ K.Loader = class {
   constructor(transport, opts = {}) {
     this.t = transport;
     this.log = opts.log || (() => {});
-    this.statusLen = 2;          // ESP32 ROM. Four on every chip after it.
+    this.chip = K.UNKNOWN_CHIP;
     this.blockSize = 1024;       // ROM loader. The stub uses 16384; we have no stub.
     this.dataTimeout = 6000;
     this.frames = [];
@@ -1793,7 +1839,7 @@ K.Loader = class {
     });
   }
 
-  async command(cmd, data = new Uint8Array(0), chk = 0, timeout = 3000) {
+  async command(cmd, data = new Uint8Array(0), chk = 0, timeout = 3000, respDataLen = 0) {
     if (this.abort) throw new Error("stopped");
     const pkt = K.buildCommand(cmd, data, chk);
     this.log("tx", (K.CMDNAME[cmd] || "0x" + cmd.toString(16)) + "  " + data.length + " B" + (chk ? "  chk 0x" + chk.toString(16) : ""));
@@ -1804,7 +1850,7 @@ K.Loader = class {
       if (left <= 0) throw new K.Timeout("no answer to " + (K.CMDNAME[cmd] || cmd) + " in " + timeout + " ms");
       const frame = await this._readFrame(left);
       let r;
-      try { r = K.parseResponse(frame, this.statusLen); }
+      try { r = K.parseResponse(frame, respDataLen); }
       catch (e) { this.log("err", "unparseable frame (" + frame.length + " B): " + e.message); throw e; }
       if (r.cmd !== cmd) { this.log("note", "ignored a response to " + (K.CMDNAME[r.cmd] || r.cmd)); continue; }
       if (!r.ok) {
@@ -1836,6 +1882,13 @@ K.Loader = class {
       step(i, "done", seq[i][0]);
     }
     step(5, "now", "SYNC");
+    return this.sync(state => step(5, state === "done" ? "done" : state, "SYNC"));
+  }
+
+  /* Usable on its own for a board already sitting in its bootloader — a clone
+     with no auto-reset circuit, or any chip whose USB peripheral does not carry
+     DTR and RTS at all. */
+  async sync(onState) {
     this.frames = [];
     let last = null;
     for (let attempt = 1; attempt <= 7; attempt++) {
@@ -1843,7 +1896,8 @@ K.Loader = class {
         await this.command(K.CMD.SYNC, K.SYNC_PAYLOAD, 0, 250);
         await K.sleep(60);
         this.frames = [];                   // the ROM answers a sync eight times
-        step(5, "done", "SYNC — answered on attempt " + attempt);
+        if (onState) onState("done");
+        this.log("note", "sync answered on attempt " + attempt);
         return true;
       } catch (e) {
         last = e;
@@ -1852,7 +1906,7 @@ K.Loader = class {
         await K.sleep(50);
       }
     }
-    step(5, "fail", "SYNC — seven attempts, no answer");
+    if (onState) onState("fail");
     throw new Error("the board never answered a sync: " + (last ? last.message : "unknown"));
   }
 
@@ -1861,21 +1915,44 @@ K.Loader = class {
     return r.value >>> 0;
   }
 
+  async securityInfo() {
+    const r = await this.command(K.CMD.GET_SECURITY_INFO, new Uint8Array(0), 0, 3000, K.SECURITY_INFO_LEN);
+    return K.u32(r.payload, K.SECURITY_INFO_CHIP_ID_OFFSET);
+  }
+
   async identify() {
-    const magic = await this.readReg(K.CHIP_MAGIC_REG);
-    const chip = K.CHIPS[magic] || { name: "unknown", statusLen: 2, supported: false, imageChipId: null };
-    this.chip = chip; this.magic = magic;
-    this.statusLen = chip.statusLen;
-    let mac = null;
+    let chip = null, magic = null, chipId = null, how = null;
+
+    // Chips from the S3 onward have no magic value; they report a chip id.
     try {
-      const m0 = await this.readReg(K.EFUSE_MAC_REG);
-      const m1 = await this.readReg(K.EFUSE_MAC_REG + 4);
-      const b = new Uint8Array(6);
-      b[0] = (m1 >> 8) & 0xff; b[1] = m1 & 0xff;
-      b[2] = (m0 >>> 24) & 0xff; b[3] = (m0 >>> 16) & 0xff; b[4] = (m0 >>> 8) & 0xff; b[5] = m0 & 0xff;
-      mac = Array.from(b, x => x.toString(16).padStart(2, "0")).join(":");
-    } catch (e) { this.log("note", "eFuse MAC not read: " + e.message); }
-    return { magic, chip, mac };
+      chipId = await this.securityInfo();
+      chip = K.chipById(chipId);
+      how = "chip id " + chipId + " from GET_SECURITY_INFO";
+    } catch (e) {
+      this.log("note", "GET_SECURITY_INFO not answered — an older chip, then");
+    }
+
+    if (!chip) {
+      magic = await this.readReg(K.CHIP_MAGIC_REG);
+      chip = K.chipByMagic(magic);
+      how = "magic value 0x" + (magic >>> 0).toString(16).padStart(8, "0");
+    }
+
+    this.chip = chip || K.UNKNOWN_CHIP;
+    this.magic = magic; this.chipId = chipId; this.identifiedBy = how;
+
+    let mac = null;
+    if (this.chip.mac) {
+      try {
+        const m0 = await this.readReg(this.chip.mac);
+        const m1 = await this.readReg(this.chip.mac + 4);
+        const b = new Uint8Array(6);
+        b[0] = (m1 >> 8) & 0xff; b[1] = m1 & 0xff;
+        b[2] = (m0 >>> 24) & 0xff; b[3] = (m0 >>> 16) & 0xff; b[4] = (m0 >>> 8) & 0xff; b[5] = m0 & 0xff;
+        mac = Array.from(b, x => x.toString(16).padStart(2, "0")).join(":");
+      } catch (e) { this.log("note", "eFuse MAC not read: " + e.message); }
+    }
+    return { magic, chipId, chip: this.chip, mac, how };
   }
 
   async prepareFlash(flashSize) {
@@ -1890,6 +1967,13 @@ K.Loader = class {
     this.frames = [];
     this.log("note", "wire moved to " + next + " baud");
     return true;
+  }
+
+  /* The ESP32 and ESP8266 ROMs take four words. Every chip after them takes a
+     fifth saying whether the write is encrypted; send it and they accept, omit
+     it and they refuse the begin outright. */
+  _beginParams(a, b, c, d) {
+    return this.chip.extendedFlashParams ? K.packU32(a, b, c, d, 0) : K.packU32(a, b, c, d);
   }
 
   eraseTimeout(size) { return Math.max(6000, 12000 + (size / 65536) * 900); }
@@ -1908,10 +1992,10 @@ K.Loader = class {
       this.log("note", region.name + ": " + K.bytesHuman(data.length) + " compressed to " + K.bytesHuman(payload.length) + " via " + K.deflateMethod());
       // On the ROM loader the size field of a compressed begin is the erase
       // size, rounded up to whole write blocks — not the compressed length.
-      await this.command(K.CMD.FLASH_DEFL_BEGIN, K.packU32(eraseBlocks * bs, numBlocks, bs, region.offset), 0, this.eraseTimeout(data.length));
+      await this.command(K.CMD.FLASH_DEFL_BEGIN, this._beginParams(eraseBlocks * bs, numBlocks, bs, region.offset), 0, this.eraseTimeout(data.length));
     } else {
       numBlocks = eraseBlocks;
-      await this.command(K.CMD.FLASH_BEGIN, K.packU32(data.length, numBlocks, bs, region.offset), 0, this.eraseTimeout(data.length));
+      await this.command(K.CMD.FLASH_BEGIN, this._beginParams(data.length, numBlocks, bs, region.offset), 0, this.eraseTimeout(data.length));
     }
 
     for (let seq = 0; seq < numBlocks; seq++) {
@@ -1934,10 +2018,11 @@ K.Loader = class {
   }
 
   async digest(offset, size) {
-    const r = await this.command(K.CMD.SPI_FLASH_MD5, K.packU32(offset, size, 0, 0), 0, Math.max(8000, 8000 + size / 1024));
-    if (r.payload.length >= 32) return K.ascii(r.payload.subarray(0, 32)).toLowerCase();
-    if (r.payload.length === 16) return K.hex(r.payload);
-    throw new Error("the bootloader returned " + r.payload.length + " bytes where a digest was expected");
+    const r = await this.command(K.CMD.SPI_FLASH_MD5, K.packU32(offset, size, 0, 0), 0, Math.max(8000, 8000 + size / 1024), 32);
+    if (r.payload.length !== 32) throw new Error("the bootloader returned " + r.payload.length + " bytes where a 32-character digest was expected");
+    const hex = K.ascii(r.payload).toLowerCase();
+    if (!/^[0-9a-f]{32}$/.test(hex)) throw new Error("the bootloader's digest is not hexadecimal: " + hex);
+    return hex;
   }
 
   async runApplication() {
@@ -2021,12 +2106,25 @@ K.Loader = class {
         const sim = new K.SimBootloader({ size: parseInt($("sim-size").value, 10), faults: S.faults });
         S.transport = new K.SimTransport(sim);
         S.sim = sim;
+        // "already in its bootloader" means exactly that, simulator included.
+        if ($("skip-reset").checked) sim.enterBootloader();
       } else {
         S.transport = new K.SerialTransport();
         await S.transport.open(115200);
       }
       S.loader = new K.Loader(S.transport, { log });
       log("note", "port open on " + S.transport.describe());
+
+      if (S.transport.isNativeUsb && S.transport.isNativeUsb()) {
+        log("note", "this port is the chip's own USB peripheral — the DTR/RTS dance does not apply");
+        $("reset-help").classList.remove("hidden");
+      }
+      if ($("skip-reset").checked) {
+        log("note", "skipping the reset dance — assuming the board is already in its bootloader");
+        for (let i = 0; i < 5; i++) { states[i] = "done"; states[i + 100] = "skipped — you put it in the bootloader"; }
+        drawSteps(states);
+        await S.loader.sync(t => { states[5] = t; states[105] = "SYNC"; drawSteps(states); });
+      } else
 
       await S.loader.enterBootloader((i, state, text) => {
         states[i] = state; states[i + 100] = text; drawSteps(states);
@@ -2041,14 +2139,17 @@ K.Loader = class {
 
       kv("chip-kv", [
         ["wire", esc(S.transport.describe())],
-        ["chip magic", "0x" + id.magic.toString(16).padStart(8, "0")],
-        ["chip", id.chip.supported ? esc(id.chip.name) : `<span style="color:var(--red)">${esc(id.chip.name)} — KEEL is an ESP32 bench only</span>`],
-        ["status bytes", String(S.loader.statusLen) + (S.loader.statusLen === 2 ? " (ESP32 ROM)" : " (post-ESP32)")],
+        ["chip", id.chip.supported
+          ? esc(id.chip.name)
+          : `<span style="color:var(--red)">${esc(id.chip.name)} — KEEL flashes the ESP32 and the ESP32-S3; this one is identified but not supported</span>`],
+        ["identified by", esc(id.how || "—")],
+        ["begin parameters", id.chip.extendedFlashParams ? "five words (post-ESP32 ROM)" : "four words (ESP32 / ESP8266 ROM)"],
         ["eFuse MAC", id.mac ? esc(id.mac) : "<span class='muted'>not read</span>"],
         ["chip revision", "<span class='muted'>not read — KEEL does not decode the eFuse block for it</span>"],
         ["flash size", "<span class='assume'>not detected — you declare it in station 04</span>"],
         ["write block", S.loader.blockSize + " B (ROM loader, no stub)"],
         ["baud", String(S.transport.baud || baud)],
+        ["SPI probe", id.chip.probe ? "available in station 02" : "<span class='muted'>not available — KEEL does not carry this chip's GPIO register map</span>"],
       ]);
       $("btn-connect").disabled = true;
       $("btn-disconnect").disabled = false;
@@ -2133,6 +2234,10 @@ K.Loader = class {
   /* ---------- 02 probe -------------------------------------------------- */
 
   $("btn-probe").addEventListener("click", async () => {
+    if (S.connected && S.chip && !S.chip.probe) {
+      $("probe-out").innerHTML = `<div class="card warn"><h4>Not available on ${esc(S.chip.name)}</h4><p class="small" style="margin:0;color:var(--dim)">The probe drives GPIO by writing the chip's registers directly, and KEEL only carries the GPIO and IO_MUX map for the classic ESP32. Guessing another chip's register addresses would write to whatever happens to live there, which is a worse outcome than not probing.</p></div>`;
+      return;
+    }
     if (!S.loader || !S.connected) {
       $("probe-out").innerHTML = `<div class="card warn"><h4>Nothing is connected</h4><p class="small" style="margin:0;color:var(--dim)">The probe drives the pins from the ROM bootloader, so connect in station 01 first. If Meshtastic is running, the probe will reset the board into the bootloader and the radio stays unconfigured until you reset it back.</p></div>`;
       return;
@@ -2854,22 +2959,30 @@ K.selfTest = async function () {
   })();
   const resp = (cmd, payload, status) => Uint8Array.from([0x01, cmd, 0, 0, 0, 0, 0, 0, ...payload, ...status]);
   (function () {
-    const r = K.parseResponse(resp(0x02, [], [0, 0]), 2);
-    ok("a two-byte status parses as success on the ESP32 ROM", r.ok && r.cmd === 0x02);
-    const bad = K.parseResponse(resp(0x02, [], [1, 0x08]), 2);
+    const r = K.parseResponse(resp(0x02, [], [0, 0]), 0);
+    ok("a plain success parses", r.ok && r.cmd === 0x02);
+    const bad = K.parseResponse(resp(0x02, [], [1, 0x08]), 0);
     ok("a failing status is a failure", !bad.ok && bad.err === 0x08);
-    const four = K.parseResponse(resp(0x02, [], [0, 0, 0, 0]), 4);
-    ok("a four-byte status parses on later chips", four.ok && four.payload.length === 0);
   })();
   (function () {
-    // The mistake that matters: a four-byte status read as two leaves status
-    // bytes in the payload and the failure code in the wrong place.
-    const f = resp(0x02, [], [1, 0x08, 0, 0]);
-    const wrong = K.parseResponse(f, 2);
-    ok("reading a four-byte status as two does NOT silently pass", !(wrong.ok && wrong.payload.length === 0), "this is the failure mode the status length guards");
+    // The bug this replaced: chips after the ESP8266 append two reserved bytes.
+    // Taking the status off the END of the frame reads those instead, and they
+    // are zero, so a refused command used to parse as a success.
+    const failing = K.parseResponse(resp(0x02, [], [1, 0x08, 0, 0]), 0);
+    ok("a failure with reserved bytes after it is still a failure", !failing.ok && failing.err === 0x08);
+    ok("the reserved bytes are kept apart from the status", failing.reserved.length === 2);
+    const okr = K.parseResponse(resp(0x02, [], [0, 0, 0, 0]), 0);
+    ok("a success with reserved bytes after it is still a success", okr.ok);
   })();
-  await throws("a frame too short to hold a status is refused", () => K.parseResponse(Uint8Array.from([1, 2, 0, 0, 0, 0, 0, 0]), 2));
-  await throws("a frame with the wrong direction byte is refused", () => K.parseResponse(Uint8Array.from([0, 2, 0, 0, 0, 0, 0, 0, 0, 0]), 2));
+  (function () {
+    const digest = "0123456789abcdef0123456789abcdef";
+    const r = K.parseResponse(resp(K.CMD.SPI_FLASH_MD5, Array.from(K.fromAscii(digest)), [0, 0, 0, 0]), 32);
+    ok("response data is taken from the front, ahead of the status", K.ascii(r.payload) === digest && r.ok);
+    const failed = K.parseResponse(resp(K.CMD.SPI_FLASH_MD5, Array.from(K.fromAscii(digest)), [1, 0x09, 0, 0]), 32);
+    ok("a digest command that failed is not read as a digest", !failed.ok && failed.err === 0x09);
+  })();
+  await throws("a frame too short to hold data plus a status is refused", () => K.parseResponse(resp(0x02, [1, 2], [0]), 32));
+  await throws("a frame with the wrong direction byte is refused", () => K.parseResponse(Uint8Array.from([0, 2, 0, 0, 0, 0, 0, 0, 0, 0]), 0));
   eq("sync payload is 07 07 12 20 then 32 x 0x55", [K.SYNC_PAYLOAD.length, K.SYNC_PAYLOAD[0], K.SYNC_PAYLOAD[3], K.SYNC_PAYLOAD[4], K.SYNC_PAYLOAD[35]], [36, 0x07, 0x20, 0x55, 0x55]);
 
   /* --- MD5 --- */
@@ -3064,7 +3177,7 @@ K.selfTest = async function () {
   try {
     const { l } = await rig();
     const id = await l.identify();
-    ok("the simulator identifies as an ESP32", id.chip.name === "ESP32" && l.statusLen === 2);
+    ok("the simulator identifies as an ESP32", id.chip.name === "ESP32");
     ok("the MAC comes back in six octets", /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(id.mac || ""));
     await l.prepareFlash(4 * 1024 * 1024);
     const plan = smallPlan();
@@ -3226,6 +3339,58 @@ K.selfTest = async function () {
     ok("a code we do not know is admitted as unknown, not guessed", g.some(x => /unrecognised RadioLib code/.test(x.body)));
   })();
 
+
+
+  /* --- other chips --- */
+  group("ESP32-S3 and the rest of the family");
+  const chipRig = async chipName => {
+    const chip = K.CHIPS.find(c => c.name === chipName);
+    const sim = new K.SimBootloader({ chip });
+    const l = new K.Loader(new K.SimTransport(sim), { log: () => {} });
+    l.dataTimeout = 400;
+    await l.enterBootloader();
+    return { l, sim, chip };
+  };
+  (function () {
+    ok("the S3 has no magic value and is found by chip id", K.CHIPS.find(c => c.name === "ESP32-S3").magic.length === 0 && K.chipById(9).name === "ESP32-S3");
+    ok("the classic ESP32 is found by magic value", K.chipByMagic(0x00f01d83).name === "ESP32");
+    ok("only the classic ESP32 skips the extended begin parameters",
+      K.CHIPS.filter(c => !c.extendedFlashParams).map(c => c.name).join(",") === "ESP32");
+    ok("every chip carries its own eFuse MAC register", K.CHIPS.every(c => typeof c.mac === "number"));
+    ok("the S3's MAC register is not the ESP32's", K.CHIPS.find(c => c.name === "ESP32-S3").mac === 0x60007044);
+    ok("the probe is only offered where the register map is known", K.CHIPS.filter(c => c.probe).map(c => c.name).join(",") === "ESP32");
+  })();
+  try {
+    const { l } = await chipRig("ESP32-S3");
+    const id = await l.identify();
+    ok("an S3 identifies over GET_SECURITY_INFO", id.chip.name === "ESP32-S3" && /chip id 9/.test(id.how));
+    ok("and its MAC comes back", /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(id.mac || ""));
+    await l.prepareFlash(8 * 1024 * 1024);
+    const plan = K.buildPlan({
+      entries: [{ name: "firmware-s3-2.9.9.bin", data: K.syntheticImage(6 * 1024, 9, 3) }],
+      writes: [{ offset: 0, token: "firmware-s3-2.9.9.bin" }],
+      flashSize: 8 * 1024 * 1024,
+    });
+    const r = plan.regions[0];
+    await l.writeRegion(r, { compress: true });
+    const d = await l.digest(r.offset, r.size);
+    ok("a compressed write lands on an S3 and verifies", d === r.md5, "chip said " + d);
+  } catch (e) { ok("an S3 identifies over GET_SECURITY_INFO", false, e.message); }
+  try {
+    // The S3 ROM refuses a four-word begin; the classic ESP32 refuses a five-word one.
+    const { l } = await chipRig("ESP32-S3");
+    await l.identify();
+    l.chip = K.CHIPS.find(c => c.name === "ESP32");   // pretend we got the chip wrong
+    let threw = null;
+    try { await l.writeRegion({ offset: 0, size: 1024, data: new Uint8Array(1024), name: "x" }, { compress: false }); }
+    catch (e) { threw = e; }
+    ok("sending an S3 the ESP32's begin parameters is refused, not silently accepted", !!threw);
+  } catch (e) { ok("sending an S3 the ESP32's begin parameters is refused, not silently accepted", false, e.message); }
+  try {
+    const { l } = await chipRig("ESP32");
+    const id = await l.identify();
+    ok("a classic ESP32 still identifies by magic after all this", id.chip.name === "ESP32" && /magic value/.test(id.how));
+  } catch (e) { ok("a classic ESP32 still identifies by magic after all this", false, e.message); }
 
   /* --- the SPI probe --- */
   group("SPI probe from the bootloader");
