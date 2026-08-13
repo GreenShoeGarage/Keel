@@ -327,7 +327,8 @@ footer{border-top:1px solid var(--rule);margin-top:40px;padding:18px 0;color:var
       </div>
       <div>
         <label class="f">&nbsp;</label>
-        <label class="check" style="margin:0"><input type="checkbox" id="skip-fs"> Skip the filesystem image</label>
+        <label class="check" style="margin:0 0 6px"><input type="checkbox" id="skip-fs"> Skip the filesystem image</label>
+        <label class="check" style="margin:0"><input type="checkbox" id="retune"> Set the image's flash size to match this chip</label>
       </div>
     </div>
     <div class="card warn small" id="flashsize-note"></div>
@@ -474,7 +475,7 @@ footer{border-top:1px solid var(--rule);margin-top:40px;padding:18px 0;color:var
    ========================================================================== */
 
 const K = {};
-K.VERSION = "2.1.1";
+K.VERSION = "2.2.0";
 K.BUILT = "2026-08-11";
 
 /* ---------- bytes ---------------------------------------------------- */
@@ -771,6 +772,59 @@ K.readZip = function (bytes) {
     if (data.length !== e.size) throw new Error("zip: " + e.name + " inflated to " + data.length + " bytes, directory says " + e.size);
     return { name: e.name, size: e.size, method: e.method, data };
   });
+};
+
+/* ---------- SHA-256 ----------------------------------------------------
+   Needed only to re-seal an image after changing its flash-size byte: the
+   bootloader carries a SHA-256 of itself and the ROM checks it. Hand-rolled
+   like the rest, because SubtleCrypto is asynchronous and not reliably
+   available from a file:// page.                                          */
+
+K.sha256 = function (input) {
+  const msg = input instanceof Uint8Array ? input : K.fromAscii(String(input));
+  const K256 = new Uint32Array([
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2]);
+  const H = new Uint32Array([0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]);
+  const len = msg.length;
+  const withPad = (((len + 9 + 63) >> 6) << 6);
+  const buf = new Uint8Array(withPad);
+  buf.set(msg); buf[len] = 0x80;
+  const dv = new DataView(buf.buffer);
+  dv.setUint32(withPad - 8, Math.floor(len / 536870912) >>> 0);
+  dv.setUint32(withPad - 4, (len << 3) >>> 0);
+  const w = new Uint32Array(64);
+  const rotr = (x, n) => (x >>> n) | (x << (32 - n));
+  for (let off = 0; off < withPad; off += 64) {
+    for (let i = 0; i < 16; i++) w[i] = dv.getUint32(off + i * 4);
+    for (let i = 16; i < 64; i++) {
+      const s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+      const s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+    }
+    let [a, b, c, d, e, f, g, h] = H;
+    for (let i = 0; i < 64; i++) {
+      const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+      const ch = (e & f) ^ (~e & g);
+      const t1 = (h + S1 + ch + K256[i] + w[i]) >>> 0;
+      const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const t2 = (S0 + maj) >>> 0;
+      h = g; g = f; f = e; e = (d + t1) >>> 0;
+      d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+    }
+    H[0] = (H[0] + a) >>> 0; H[1] = (H[1] + b) >>> 0; H[2] = (H[2] + c) >>> 0; H[3] = (H[3] + d) >>> 0;
+    H[4] = (H[4] + e) >>> 0; H[5] = (H[5] + f) >>> 0; H[6] = (H[6] + g) >>> 0; H[7] = (H[7] + h) >>> 0;
+  }
+  const out = new Uint8Array(32), odv = new DataView(out.buffer);
+  for (let i = 0; i < 8; i++) odv.setUint32(i * 4, H[i]);
+  return out;
 };
 /* ============================================================================
    Section 2 — the wire format, the image format, and the plan.
@@ -1172,6 +1226,16 @@ K.readBootLog = function (raw) {
     return out;
   }
 
+  /* The bootloader's own assertion, which arrives before the firmware runs. */
+  const probe = whole.match(/Detected size\((\d+)k\) smaller than the size in the binary image header\((\d+)k\)/i);
+  if (probe) {
+    add("stop", "The image declares more flash than this chip has",
+      "The bootloader found " + Math.round(+probe[1] / 1024) + " MB of flash and its own header claims " + Math.round(+probe[2] / 1024) +
+      " MB, so it asserts in do_core_init and reboots. Nothing after this line in the log is a separate fault. Either flash an image built for a " +
+      Math.round(+probe[1] / 1024) + " MB board, or switch on \"set the image's flash size to match this chip\" in station 04 — that rewrites the header byte and re-seals the image's SHA-256, which is what esptool does by default.");
+    return out;
+  }
+
   const build = text.match(/S:B:\d+,([0-9][^,\s]*),([^,\s]+)/);
   if (build) add("info", "Firmware is running", "Version " + build[1] + ", variant " + build[2] + ".");
 
@@ -1259,6 +1323,30 @@ K.buildPlan = function (opts) {
 
   regions.sort((a, b) => a.offset - b.offset);
 
+  /* Re-tuning has to happen before the digests are computed, because the whole
+     point is that the bytes on the chip differ from the bytes in the archive
+     and the verification must hold KEEL to what it actually sent. */
+  if (opts.retune && opts.chip && opts.chip.bootloaderOffset != null) {
+    const bo = opts.chip.bootloaderOffset;
+    const code = K.flashSizeCode(flashSize);
+    for (const r of regions) {
+      if (r.skipped || code === null) continue;
+      if (!(r.offset <= bo && r.offset + r.size > bo)) continue;
+      const at = bo - r.offset;
+      const h = K.imageHeaderAt(r.data, at);
+      if (!h.valid || h.sizeCode === code) continue;
+      try {
+        const t = K.retuneFlashSize(r.data, at, code);
+        r.data = t.data;
+        r.md5 = K.md5(t.data);
+        r.header = K.imageHeaderAt(t.data, at);
+        r.retuned = { from: K.FLASH_SIZES[h.sizeCode] || h.sizeCode, to: K.FLASH_SIZES[code], resealed: !!t.digest, at };
+      } catch (e) {
+        problems.push({ level: "stop", text: "could not re-tune " + r.name + ": " + e.message });
+      }
+    }
+  }
+
   for (const r of regions) {
     if (r.offset % K.SECTOR !== 0)
       problems.push({ level: "stop", text: K.addr(r.offset) + " is not on a 4096-byte sector boundary; the bootloader erases whole sectors and will not take it" });
@@ -1296,7 +1384,16 @@ K.buildPlan = function (opts) {
         problems.push({ level: "stop", text: covering.name + " is built for " + h.chip + " and the chip on the wire is " + opts.chip.name +
           " — this is the wrong architecture's archive" +
           (!atBoot.valid && found.at !== null ? ", and its bootloader sits at " + K.addr(found.at) + " where " + opts.chip.name + " boots from " + K.addr(bo) : "") + "." });
-      } else if (!atBoot.valid) {
+      } else if (atBoot.valid && atBoot.sizeCode !== undefined && !covering.retuned) {
+        const declared = K.flashSizeBytes(atBoot.sizeCode);
+        if (declared && declared > flashSize) {
+          problems.push({ level: "stop", text: covering.name + " declares " + atBoot.size + " of flash in its bootloader header and you have declared " + K.bytesHuman(flashSize) +
+            ". The second-stage bootloader compares the two, asserts in do_core_init, and the board reboots forever — \"Detected size(" + Math.round(flashSize / 1024) + "k) smaller than the size in the binary image header(" + Math.round(declared / 1024) + "k). Probe failed.\" Either use an image built for this board, or switch on re-tuning below." });
+        }
+      }
+      // Only complain about a missing header when we have not already said
+      // something more useful about the same file.
+      if (!atBoot.valid && !problems.some(p => p.text.startsWith(covering.name))) {
         problems.push({ level: "stop", text: "in " + covering.name + ", the bytes that would land at " + K.addr(bo) + " are not an image header (" + atBoot.why + ")" +
           (found.at !== null ? ", though the file does carry one at " + K.addr(found.at) + " — check the offset this write is going to" : "") +
           ", so the " + opts.chip.name + " would find nothing to boot there." });
@@ -1596,6 +1693,76 @@ K.probeRadio = async function (loader, opts = {}) {
 
   return { findings, version: v127, status126: st126, miso, stuck };
 };
+
+/* ============================================================================
+   Re-tuning an image's flash-size byte.
+
+   The bootloader header declares how big the flash is. If it claims more than
+   the chip has, the second-stage bootloader asserts in do_core_init and the
+   board reboots forever — "Detected size(8192k) smaller than the size in the
+   binary image header(16384k)". esptool rewrites this byte by default; KEEL
+   deliberately did not, which is defensible right up until it costs someone a
+   day. So: check it always, offer to change it, and never change it quietly.
+
+   Changing the byte invalidates the SHA-256 the bootloader carries of itself,
+   so the digest has to be recomputed. Structure and digest handling read from
+   esptool's cmds.py _update_image_flash_params.
+   ========================================================================== */
+
+K.SHA_APPENDED_BYTE = 23;     // 15th byte of the extended header
+
+/* Walk the segments to find where the image proper ends: header, extended
+   header, each segment, padding to a 16-byte boundary less one, checksum. */
+K.imageDataLength = function (data, at) {
+  const o = at | 0;
+  if (data[o] !== 0xe9) return null;
+  const segments = data[o + 1];
+  let p = o + 24;
+  for (let i = 0; i < segments; i++) {
+    if (p + 8 > data.length) return null;
+    const len = K.u32(data, p + 4);
+    p += 8 + len;
+    if (p > data.length) return null;
+  }
+  while ((p - o + 1) % 16 !== 0) p++;
+  p += 1;                                    // the checksum byte
+  return p - o;
+};
+
+K.imageHasDigest = (data, at) => data[(at | 0) + K.SHA_APPENDED_BYTE] === 1;
+
+K.imageDigestState = function (data, at) {
+  const o = at | 0;
+  if (!K.imageHasDigest(data, o)) return { present: false };
+  const len = K.imageDataLength(data, o);
+  if (len === null || o + len + 32 > data.length) return { present: true, readable: false };
+  const stored = K.hex(data.subarray(o + len, o + len + 32));
+  const computed = K.hex(K.sha256(data.subarray(o, o + len)));
+  return { present: true, readable: true, at: o + len, stored, computed, valid: stored === computed };
+};
+
+/* Returns a NEW array; the original is never touched. */
+K.retuneFlashSize = function (data, at, sizeCode) {
+  const o = at | 0;
+  if (data[o] !== 0xe9) throw new Error("no image header at " + K.addr(o));
+  const out = data.slice();
+  const before = out[o + 3];
+  out[o + 3] = ((sizeCode & 0x0f) << 4) | (before & 0x0f);   // size in the high nibble, frequency untouched
+  const changed = out[o + 3] !== before;
+  let digest = null;
+  if (K.imageHasDigest(out, o)) {
+    const len = K.imageDataLength(out, o);
+    if (len === null || o + len + 32 > out.length) throw new Error("this image claims an appended SHA-256 but its segments do not add up, so KEEL will not re-seal it");
+    const d = K.sha256(out.subarray(o, o + len));
+    out.set(d, o + len);
+    digest = K.hex(d);
+  }
+  return { data: out, changed, before, after: out[o + 3], digest, sizeCode };
+};
+
+K.FLASH_SIZE_CODES = { 1048576: 0, 2097152: 1, 4194304: 2, 8388608: 3, 16777216: 4, 33554432: 5 };
+K.flashSizeCode = bytes => (K.FLASH_SIZE_CODES[bytes] === undefined ? null : K.FLASH_SIZE_CODES[bytes]);
+K.flashSizeBytes = code => Object.keys(K.FLASH_SIZE_CODES).map(Number).find(b => K.FLASH_SIZE_CODES[b] === code) || null;
 /* ============================================================================
    Section 3 — talking to the thing. One driver, two wires: a real serial port
    and a synthetic bootloader that answers the same commands.
@@ -2498,7 +2665,7 @@ K.Loader = class {
 
   /* ---------- 04 plan --------------------------------------------------- */
 
-  ["flashsize", "compress", "skip-fs"].forEach(id => $(id).addEventListener("change", refreshPlan));
+  ["flashsize", "compress", "skip-fs", "retune"].forEach(id => $(id).addEventListener("change", refreshPlan));
   $("ack-plan").addEventListener("change", () => {
     $("btn-approve").disabled = !$("ack-plan").checked || !(S.plan && S.plan.canRun);
   });
@@ -2577,7 +2744,7 @@ K.Loader = class {
     renderManual();
 
     const flashSize = parseInt($("flashsize").value, 10);
-    S.plan = K.buildPlan({ entries: S.entries, writes, flashSize, skipFs: $("skip-fs").checked, chip: S.chip });
+    S.plan = K.buildPlan({ entries: S.entries, writes, flashSize, skipFs: $("skip-fs").checked, chip: S.chip, retune: $("retune").checked });
     S.plan.compress = $("compress").value === "1";
 
     const declared = (() => {
@@ -2593,6 +2760,12 @@ K.Loader = class {
           skipped.map(w => `${K.addr(w.offset)} — <code>${esc(w.token)}</code> — you chose to write nothing here`).join("<br>")
         }<br><span class="muted">That is your decision, not the script's. It is recorded in the run record.</span></div>`
       : "";
+    const retuned = S.plan.regions.filter(r => r.retuned);
+    const retuneNote = retuned.length
+      ? `<div class="card warn small skip-note" style="margin-top:14px"><b>KEEL has modified ${retuned.length === 1 ? "an image" : "these images"} before writing</b><br>${
+          retuned.map(r => `${esc(r.name)} — flash size ${esc(r.retuned.from)} → ${esc(r.retuned.to)}${r.retuned.resealed ? ", SHA-256 re-sealed" : ""}`).join("<br>")
+        }<br><span class="muted">This is what <code>esptool --flash_size</code> does. The digests below are of the modified bytes, so verification still holds KEEL to exactly what it sent — but what lands on the chip is no longer byte-for-byte what the vendor shipped, and the run record says so.</span></div>`
+      : "";
     const rows = S.plan.regions.map(r => `<tr>
         <td${r.assumed ? ' class="assume"' : ""}>${K.addr(r.offset)}</td>
         <td>${esc(r.name)}${r.skipped ? ' <span class="tag">skipped</span>' : ""}</td>
@@ -2605,6 +2778,7 @@ K.Loader = class {
     $("plan-table").innerHTML = `<thead><tr><th>Offset</th><th>File</th><th>Size</th><th>Ends</th><th>Sent as</th><th>Region</th><th>MD5 we expect</th></tr></thead><tbody>${rows}</tbody>
       <tfoot><tr><td colspan="2" class="muted">${S.plan.regions.filter(r => !r.skipped).length} regions</td><td class="n">${K.bytesHuman(S.plan.totalBytes)}</td><td colspan="4" class="muted">${S.plan.compress ? "compressed with " + K.deflateMethod() : "sent byte for byte"}</td></tr></tfoot>`;
     document.querySelectorAll(".skip-note").forEach(n => n.remove());
+    if (retuneNote) $("plan-table").insertAdjacentHTML("afterend", retuneNote);
     if (skipNote) $("plan-table").insertAdjacentHTML("afterend", skipNote);
 
     const probs = S.plan.problems;
@@ -2737,7 +2911,9 @@ K.Loader = class {
   });
 
   function recordOf(r, ok) {
-    return { offset: K.addr(r.offset), name: r.name, size: r.size, expected: r.md5, reported: r.chipMd5 || null, verdict: ok ? "match" : "MISMATCH" };
+    return { offset: K.addr(r.offset), name: r.name, size: r.size, expected: r.md5, reported: r.chipMd5 || null,
+             modifiedByKeel: r.retuned ? "flash size " + r.retuned.from + " -> " + r.retuned.to + (r.retuned.resealed ? ", SHA-256 re-sealed" : "") : null,
+             verdict: ok ? "match" : "MISMATCH" };
   }
 
   /* ---------- 06 proof -------------------------------------------------- */
@@ -2870,6 +3046,33 @@ K.syntheticCombined = function (bytes, chipId, bootOffset) {
   const d = new Uint8Array(bytes).fill(0xff);
   const hdr = K.syntheticImage(Math.max(1024, bytes - bootOffset), chipId, 2);
   d.set(hdr.subarray(0, d.length - bootOffset), bootOffset);
+  return d;
+};
+
+
+/* A structurally real image: 8-byte header, 16-byte extended header with the
+   SHA-appended flag set, segments, padding, checksum byte, then the digest.
+   Needed because re-tuning the flash-size byte has to re-seal that digest. */
+K.syntheticSealedImage = function (chipId, sizeCode, segBytes) {
+  const segs = segBytes || [512, 256];
+  let len = 24;
+  for (const n of segs) len += 8 + n;
+  while ((len + 1) % 16 !== 0) len++;
+  len += 1;
+  const d = new Uint8Array(len + 32);
+  d[0] = 0xe9; d[1] = segs.length; d[2] = 2;
+  d[3] = ((sizeCode & 0xf) << 4) | 0x0f;
+  new DataView(d.buffer).setUint32(4, 0x40080000, true);
+  d[12] = chipId & 0xff; d[13] = (chipId >> 8) & 0xff;
+  d[K.SHA_APPENDED_BYTE] = 1;
+  let p = 24;
+  for (const n of segs) {
+    new DataView(d.buffer).setUint32(p, 0x3f400000, true);
+    new DataView(d.buffer).setUint32(p + 4, n, true);
+    for (let i = 0; i < n; i++) d[p + 8 + i] = (i * 31 + n) & 0xff;
+    p += 8 + n;
+  }
+  d.set(K.sha256(d.subarray(0, len)), len);
   return d;
 };
 
@@ -3528,9 +3731,61 @@ K.selfTest = async function () {
     ok("no radio or region finding is invented from a log with neither", !f.some(x => /radio|region/i.test(x.title)));
   })();
   (function () {
+    const log = "ESP-ROM:esp32s3-20210327\rrst:0xc (RTC_SW_CPU_RST),boot:0x8\rE (379) spi_flash: Detected size(8192k) smaller than the size in the binary image header(16384k). Probe failed.\r\rassert failed: do_core_init startup.c:328 (flash_ret == ESP_OK)\rBacktrace: 0x40377c5a:0x3fceb180\rRebooting...";
+    const f = K.readBootLog(log);
+    const t = f.map(x => x.title).join(" | ");
+    ok("the flash-size assertion is read as the cause", f.some(x => x.level === "stop" && /declares more flash than this chip has/.test(x.title)), t);
+    ok("both sizes are stated in the finding", f.some(x => /8 MB/.test(x.body) && /16 MB/.test(x.body)));
+    ok("the fix is named", f.some(x => /flash size to match this chip/.test(x.body)));
+    ok("the backtrace is not offered as a separate fault to chase", !f.some(x => /backtrace|core dump|watchdog/i.test(x.title)), t);
+  })();
+  (function () {
     const f = K.readBootLog("invalid header: 0x12345678\rESP-ROM:esp32s3-20210327");
     ok("a header that is present but wrong reads differently from an erased one",
       f.some(x => /not an image/.test(x.title)) && !f.some(x => /erased/.test(x.title)));
+  })();
+
+
+  /* --- flash size in the image header --- */
+  group("Flash size declared by the image");
+  (function () {
+    ok("SHA-256 matches the standard vectors",
+      K.hex(K.sha256("abc")) === "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" &&
+      K.hex(K.sha256("")) === "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    const img = K.syntheticSealedImage(9, 4);          // declares 16 MB
+    const st = K.imageDigestState(img, 0);
+    ok("a sealed image's own digest checks out before we touch it", st.present && st.valid, JSON.stringify(st).slice(0, 120));
+    ok("its declared size is read as 16 MB", K.parseImageHeader(img).size === "16 MB");
+
+    const tuned = K.retuneFlashSize(img, 0, K.flashSizeCode(8 * 1024 * 1024));
+    ok("re-tuning changes the size byte", tuned.changed && K.parseImageHeader(tuned.data).size === "8 MB");
+    ok("and leaves the frequency alone", K.parseImageHeader(tuned.data).freq === K.parseImageHeader(img).freq);
+    ok("and re-seals the digest so the bootloader still validates", K.imageDigestState(tuned.data, 0).valid);
+    ok("the original is not modified", K.parseImageHeader(img).size === "16 MB");
+    ok("the bytes really did change, so the digest we verify against must change too", K.md5(tuned.data) !== K.md5(img));
+    ok("re-tuning to the size it already declares is a no-op", !K.retuneFlashSize(img, 0, 4).changed);
+    ok("an unsealed image re-tunes without inventing a digest", K.retuneFlashSize(K.syntheticImage(2048, 0, 2), 0, 3).digest === null);
+    ok("size codes round-trip", K.flashSizeCode(8388608) === 3 && K.flashSizeBytes(3) === 8388608 && K.flashSizeCode(12345) === null);
+    ok("segment walking finds the end of the image", K.imageDataLength(img, 0) + 32 === img.length);
+  })();
+  (function () {
+    const s3 = K.CHIPS.find(c => c.name === "ESP32-S3");
+    const entries = [{ name: "firmware-s3-2.9.9.factory.bin", data: K.syntheticSealedImage(9, 4) }];
+    const writes = [{ offset: 0, token: "firmware-s3-2.9.9.factory.bin" }];
+    const tooBig = K.buildPlan({ entries, writes, flashSize: 8 * 1024 * 1024, chip: s3 });
+    ok("an image declaring more flash than the chip has is refused before it is written",
+      !tooBig.canRun && tooBig.problems.some(p => /declares 16 MB/.test(p.text)), tooBig.problems.map(p => p.text).join(" | "));
+    ok("and the message names the failure it would cause", tooBig.problems.some(p => /Probe failed|do_core_init|reboot/i.test(p.text)));
+    const matched = K.buildPlan({ entries, writes, flashSize: 16 * 1024 * 1024, chip: s3 });
+    ok("the same image on a big enough chip plans cleanly", matched.canRun, matched.problems.map(p => p.text).join(" | "));
+    const retuned = K.buildPlan({ entries, writes, flashSize: 8 * 1024 * 1024, chip: s3, retune: true });
+    ok("with re-tuning switched on, the plan goes through", retuned.canRun, retuned.problems.map(p => p.text).join(" | "));
+    ok("the region carries the modified bytes and a digest to match", retuned.regions[0].retuned &&
+      K.parseImageHeader(retuned.regions[0].data).size === "8 MB" &&
+      retuned.regions[0].md5 === K.md5(retuned.regions[0].data));
+    ok("and the re-sealed image still validates its own SHA", K.imageDigestState(retuned.regions[0].data, 0).valid);
+    const smaller = K.buildPlan({ entries: [{ name: "f.bin", data: K.syntheticSealedImage(9, 1) }], writes: [{ offset: 0, token: "f.bin" }], flashSize: 8388608, chip: s3 });
+    ok("an image declaring LESS than the chip has is allowed through", smaller.canRun, smaller.problems.map(p => p.text).join(" | "));
   })();
 
   /* --- the SPI probe --- */
