@@ -474,7 +474,7 @@ footer{border-top:1px solid var(--rule);margin-top:40px;padding:18px 0;color:var
    ========================================================================== */
 
 const K = {};
-K.VERSION = "2.1.0";
+K.VERSION = "2.1.1";
 K.BUILT = "2026-08-11";
 
 /* ---------- bytes ---------------------------------------------------- */
@@ -934,6 +934,27 @@ K.FLASH_MODES = { 0: "QIO", 1: "QOUT", 2: "DIO", 3: "DOUT" };
 K.FLASH_SIZES = { 0: "1 MB", 1: "2 MB", 2: "4 MB", 3: "8 MB", 4: "16 MB", 5: "32 MB", 6: "64 MB", 7: "128 MB" };
 K.FLASH_FREQS = { 0: "40 MHz", 1: "26 MHz", 2: "20 MHz", 0xf: "80 MHz" };
 
+/* A combined ("factory") image is the whole flash layout in one file, so its
+   first byte is whatever lives at address zero — on the classic ESP32 that is
+   4096 bytes of padding, with the bootloader's 0xE9 at 0x1000. The header is at
+   the offset the CHIP boots from, not at the start of the file. Assuming
+   otherwise is how v2.1.0 refused a perfectly good ESP32 factory image. */
+K.imageHeaderAt = function (data, offset) {
+  const o = offset | 0;
+  if (o < 0 || o >= data.length) return { valid: false, why: "offset " + K.addr(o) + " is past the end of this file" };
+  return K.parseImageHeader(data.subarray(o));
+};
+
+/* Where a file's image header actually is: at the front for a plain image, at
+   0x1000 for a classic-ESP32 combined image. */
+K.findImageHeader = function (data) {
+  for (const off of [0, 0x1000]) {
+    const h = K.imageHeaderAt(data, off);
+    if (h.valid) return { at: off, header: h };
+  }
+  return { at: null, header: K.parseImageHeader(data) };
+};
+
 K.parseImageHeader = function (data) {
   if (data.length < 24) return { valid: false, why: "shorter than an image header" };
   if (data[0] !== 0xe9) return { valid: false, why: "first byte is 0x" + data[0].toString(16) + ", not the 0xE9 image magic" };
@@ -1226,7 +1247,8 @@ K.buildPlan = function (opts) {
       size: entry.data.length,
       data: entry.data,
       md5: K.md5(entry.data),
-      header: K.parseImageHeader(entry.data),
+      header: K.findImageHeader(entry.data).header,
+      headerAt: K.findImageHeader(entry.data).at,
       skipped,
       state: skipped ? "skipped" : "planned",
       sent: 0,
@@ -1259,12 +1281,27 @@ K.buildPlan = function (opts) {
     const covering = live.find(r => r.offset <= bo && r.offset + r.size > bo);
     if (!covering) {
       problems.push({ level: "stop", text: "nothing in this plan writes to " + K.addr(bo) + ", which is where the " + opts.chip.name + " reads its bootloader from. The board will find erased flash there and loop on \"invalid header: 0xffffffff\"." });
-    } else if (covering.offset === bo && covering.header && !covering.header.valid) {
-      problems.push({ level: "stop", text: covering.name + " starts at " + K.addr(bo) + " but has no 0xE9 image header, so the " + opts.chip.name + " will not boot it." });
+    } else {
+      // What matters is the byte that will LAND at the chip's boot address.
+      const atBoot = K.imageHeaderAt(covering.data, bo - covering.offset);
+      const found = K.findImageHeader(covering.data);
+      const wrongArch = h => opts.chip.imageChipId !== null && h.valid && h.chipId !== opts.chip.imageChipId;
+
+      if (wrongArch(atBoot) || (!atBoot.valid && wrongArch(found.header))) {
+        // Say the useful thing first. A file whose header sits at the OTHER
+        // chip's boot offset is not a corrupt image, it is the other chip's
+        // archive, and "no header at 0x0" would send you looking for the wrong
+        // fault entirely.
+        const h = atBoot.valid ? atBoot : found.header;
+        problems.push({ level: "stop", text: covering.name + " is built for " + h.chip + " and the chip on the wire is " + opts.chip.name +
+          " — this is the wrong architecture's archive" +
+          (!atBoot.valid && found.at !== null ? ", and its bootloader sits at " + K.addr(found.at) + " where " + opts.chip.name + " boots from " + K.addr(bo) : "") + "." });
+      } else if (!atBoot.valid) {
+        problems.push({ level: "stop", text: "in " + covering.name + ", the bytes that would land at " + K.addr(bo) + " are not an image header (" + atBoot.why + ")" +
+          (found.at !== null ? ", though the file does carry one at " + K.addr(found.at) + " — check the offset this write is going to" : "") +
+          ", so the " + opts.chip.name + " would find nothing to boot there." });
+      }
     }
-    const wrongChip = live.filter(r => r.header && r.header.valid && opts.chip.imageChipId !== null && r.header.chipId !== opts.chip.imageChipId);
-    for (const r of wrongChip)
-      problems.push({ level: "stop", text: r.name + " is built for " + r.header.chip + " and the chip on the wire is " + opts.chip.name });
   }
 
   return {
@@ -2420,9 +2457,9 @@ K.Loader = class {
     const bins = S.entries.filter(e => /\.bin$/i.test(e.name));
     $("hdr-table").innerHTML = "<thead><tr><th>File</th><th>Magic</th><th>Segments</th><th>Mode</th><th>Declares</th><th>Built for</th></tr></thead><tbody>" +
       bins.map(e => {
-        const h = K.parseImageHeader(e.data);
-        if (!h.valid) return `<tr><td>${esc(e.name)}</td><td colspan="5" class="muted">no image header — ${esc(h.why)} (normal for a filesystem image)</td></tr>`;
-        return `<tr><td>${esc(e.name)}</td><td>0xE9</td><td class="n">${h.segments}</td><td>${esc(h.mode)}</td><td>${esc(h.size)} @ ${esc(h.freq)}</td><td>${esc(h.chip)}</td></tr>`;
+        const f = K.findImageHeader(e.data);
+        if (!f.header.valid) return `<tr><td>${esc(e.name)}</td><td colspan="5" class="muted">no image header at 0x0 or 0x1000 — ${esc(f.header.why)} (normal for a filesystem image)</td></tr>`;
+        return `<tr><td>${esc(e.name)}</td><td>0xE9 at ${K.addr(f.at)}${f.at ? " <span class=\"tag\">combined</span>" : ""}</td><td class="n">${f.header.segments}</td><td>${esc(f.header.mode)}</td><td>${esc(f.header.size)} @ ${esc(f.header.freq)}</td><td>${esc(f.header.chip)}</td></tr>`;
       }).join("") + "</tbody>";
 
     renderGate(bins);
@@ -2437,7 +2474,7 @@ K.Loader = class {
     const g = $("variant-gate");
     const fw = firmwareEntry();
     if (!fw) { g.innerHTML = ""; return; }
-    const h = K.parseImageHeader(fw.data);
+    const h = K.findImageHeader(fw.data).header;
     const variant = (fw.name.split("/").pop().match(/^firmware-(.+?)-\d/) || [, "(not in the filename)"])[1];
     if (!S.connected) {
       g.innerHTML = `<div class="card"><h4>Variant: ${esc(variant)}</h4><p class="small muted" style="margin:0">Connect a board in station 01 and KEEL will check this image against the chip that is actually on the wire.</p></div>`;
@@ -2825,6 +2862,17 @@ K.syntheticImage = function (bytes, chipId, sizeCode) {
   return d;
 };
 
+
+/* A combined image the way the real ones are built: everything from address
+   zero in one file, so on the classic ESP32 the first 4096 bytes are padding
+   and the bootloader header sits at 0x1000. */
+K.syntheticCombined = function (bytes, chipId, bootOffset) {
+  const d = new Uint8Array(bytes).fill(0xff);
+  const hdr = K.syntheticImage(Math.max(1024, bytes - bootOffset), chipId, 2);
+  d.set(hdr.subarray(0, d.length - bootOffset), bootOffset);
+  return d;
+};
+
 K.SYNTH_SCRIPT = [
   "#!/usr/bin/env bash",
   "# device-install.sh - synthetic, for the KEEL simulator",
@@ -2838,7 +2886,8 @@ K.SYNTH_SCRIPT = [
 
 K.syntheticRelease = function () {
   return [
-    { name: "firmware-diy-v1-2.9.9.bin", method: 0, size: 96 * 1024, data: K.syntheticImage(96 * 1024, 0, 2) },
+    // A combined image like the real ones: padding from 0x0, bootloader at 0x1000.
+    { name: "firmware-diy-v1-2.9.9.bin", method: 0, size: 96 * 1024, data: K.syntheticCombined(96 * 1024, 0, 0x1000) },
     { name: "bleota.bin", method: 0, size: 20 * 1024, data: K.syntheticImage(20 * 1024, 0, 2) },
     { name: "littlefs-2.9.9.bin", method: 0, size: 32 * 1024, data: (() => { const d = new Uint8Array(32 * 1024); for (let i = 0; i < d.length; i++) d[i] = (i * 7) & 0xff; return d; })() },
     { name: "device-install.sh", method: 0, size: K.SYNTH_SCRIPT.length, data: K.fromAscii(K.SYNTH_SCRIPT) },
@@ -3445,12 +3494,26 @@ K.selfTest = async function () {
       !at1000.canRun && at1000.problems.some(p => /reads its bootloader from/.test(p.text)), at1000.problems.map(p => p.text).join(" | "));
     const esp32 = K.CHIPS.find(c => c.name === "ESP32");
     const classicOk = K.buildPlan({
-      entries: [{ name: "firmware-diy-v1-2.9.9.bin", data: K.syntheticImage(64 * 1024, 0, 2) }],
-      writes: [{ offset: 0, token: "firmware-diy-v1-2.9.9.bin" }], flashSize: 4194304, chip: esp32,
+      entries: [{ name: "firmware-diy-v1-2.9.9.factory.bin", data: K.syntheticCombined(96 * 1024, 0, 0x1000) }],
+      writes: [{ offset: 0, token: "firmware-diy-v1-2.9.9.factory.bin" }], flashSize: 4194304, chip: esp32,
     });
-    ok("a classic ESP32 image written from 0x0 still covers 0x1000 and passes", classicOk.canRun);
+    ok("a classic ESP32 factory image — padding at 0x0, header at 0x1000 — is accepted",
+      classicOk.canRun, classicOk.problems.map(p => p.text).join(" | "));
+    ok("and the front of that file is correctly seen as not-a-header",
+      !K.parseImageHeader(classicOk.regions[0].data).valid && K.imageHeaderAt(classicOk.regions[0].data, 0x1000).valid);
+    ok("findImageHeader locates it at 0x1000 rather than giving up",
+      K.findImageHeader(classicOk.regions[0].data).at === 0x1000);
+    const wrongArch = K.buildPlan({
+      entries: [{ name: "firmware-diy-v1-2.9.9.factory.bin", data: K.syntheticCombined(96 * 1024, 0, 0x1000) }],
+      writes: [{ offset: 0, token: "firmware-diy-v1-2.9.9.factory.bin" }], flashSize: 8388608, chip: s3,
+    });
+    ok("a classic ESP32 factory image aimed at an S3 is refused as the wrong architecture",
+      !wrongArch.canRun && wrongArch.problems.some(p => /wrong architecture/.test(p.text)),
+      wrongArch.problems.map(p => p.text).join(" | "));
+    ok("and it is refused for the right reason, not for a missing header",
+      !wrongArch.problems.some(p => /not an image header/.test(p.text)));
     const wrongChip = K.buildPlan({ entries, writes: [{ offset: 0, token: "firmware-s3-2.9.9.bin" }], flashSize: 4194304, chip: esp32 });
-    ok("an S3 image aimed at a classic ESP32 is refused", !wrongChip.canRun && wrongChip.problems.some(p => /built for ESP32-S3/.test(p.text)));
+    ok("an S3 image aimed at a classic ESP32 is refused", !wrongChip.canRun, wrongChip.problems.map(p => p.text).join(" | "));
     ok("with no chip identified yet, the plan does not invent a bootloader rule",
       K.buildPlan({ entries, writes: [{ offset: 0x1000, token: "firmware-s3-2.9.9.bin" }], flashSize: 8388608 }).canRun);
   })();
